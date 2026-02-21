@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+*.egg
+.eggs/
+
+# Environment
+.env
+!.env.example
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Database
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Celery
+celerybeat-schedule*
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# Alembic
+migrations/versions/*.pyc
