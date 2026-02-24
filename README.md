@@ -1,53 +1,59 @@
-# 🧠 LLM Efficiency Monitoring & Optimization Platform
+# AI Operations Optimizer
 
-> Sentry/Datadog for LLM systems — monitor, explain, and optimize cost & latency safely.
+LLM Monitor is a lightweight Python SDK for monitoring and optimizing LLM usage in production applications.  
+With a single wrapper line, it captures token usage, cost, and latency for OpenAI-compatible calls and sends structured telemetry to a backend where users can analyze performance in a dashboard.
 
-## Architecture
+It acts as an observability and optimization layer for LLM systems, similar to how Sentry monitors errors, but focused on LLM efficiency.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Your App                             │
-│  from llm_monitor import monitor                            │
-│  monitor.wrap_openai(openai_client)  # one line             │
-└────────────────────────┬────────────────────────────────────┘
-                         │ batched events (HTTP)
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Backend (FastAPI)                         │
-│  Ingest API → Redis Queue → Celery Workers → Postgres       │
-│  Agents: Metrics, Anomaly, Heuristic, Compression, Sim      │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Dashboard (Next.js)                         │
-│  Cost/Tokens • Hotspots • Suggestions • Simulate • Apply    │
-└─────────────────────────────────────────────────────────────┘
-```
+---
 
-## Quick Start
+### *What It Does*
 
-```bash
-# Clone and start all services
-git clone <repo>
-cd llm-efficiency-platform
-cp .env.example .env
-docker compose up -d
+- Wraps OpenAI-compatible clients with one line of code  
+- Captures tokens, cost, latency, model usage, and feature tags  
+- Ships batched telemetry asynchronously with minimal overhead  
+- Enables dashboard-level visibility into cost, usage patterns, and hotspots  
+- Supports optimization suggestions and simulation via backend processing  
 
-# Install the SDK
-pip install llm-monitor-sdk
-```
+---
 
-## Components
+### *How It Works*
 
-| Component | Path | Tech |
-|-----------|------|------|
-| Python SDK | `sdk/` | Python 3.9+ |
-| Backend API | `backend/` | FastAPI + Postgres + Redis |
-| Dashboard | `dashboard/` | Next.js 14 + Tailwind |
-| Infrastructure | `infra/` | Docker + docker-compose |
+1. **Client Instrumentation**  
+   The SDK wraps an OpenAI-compatible client using a lightweight proxy. It intercepts each request/response cycle without modifying your application logic or changing model behavior.
 
-## SDK Usage
+2. **Metadata Collection**  
+   For every LLM call, the SDK captures structured telemetry:
+   - Prompt and completion token usage  
+   - Model name and endpoint type  
+   - End-to-end latency  
+   - Optional feature tags for grouping  
+   - Error status (if any)  
+
+   This data is derived from response usage fields and timing measurements.
+
+3. **Batched Event Shipping**  
+   Collected events are buffered in memory and sent asynchronously in batches to the backend ingestion API.  
+   This minimizes runtime overhead and prevents blocking application requests.
+
+4. **Backend Processing**  
+   The backend:
+   - Computes cost deterministically using model pricing tables  
+   - Aggregates metrics by project, model, and feature  
+   - Detects abnormal cost or latency patterns  
+   - Generates optimization suggestions (e.g., model swaps, prompt reduction)
+
+5. **Dashboard Insights**  
+   Processed metrics are surfaced in a dashboard where users can:
+   - Analyze token and cost distribution  
+   - Identify inefficient prompts (hotspots)  
+   - Simulate potential savings before applying optimizations  
+
+Integration requires only wrapping the client, no changes to core application logic.
+
+---
+
+### *Syntax*
 
 ```python
 import openai
@@ -56,111 +62,8 @@ from llm_monitor import LLMMonitor
 monitor = LLMMonitor(api_key="your-project-key")
 client = monitor.wrap_openai(openai.OpenAI())
 
-# All calls now tracked automatically
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello"}],
     extra_headers={"X-Feature-Tag": "chat"}
 )
-```
-
-## Development
-
-```bash
-# Backend only
-cd backend && pip install -r requirements.txt
-uvicorn app.main:app --reload
-
-# Dashboard only  
-cd dashboard && npm install && npm run dev
-
-# Full stack
-docker compose up
-```
-
-## Environment Variables
-
-Copy `.env.example` to `.env` and fill in:
-
-- `DATABASE_URL` — Postgres connection string
-- `REDIS_URL` — Redis connection string
-- `SECRET_KEY` — JWT signing secret
-- `OPENAI_API_KEY` — For prompt compression agent (optional)
-
-```
-llm-efficiency-platform/
-├── .env.example
-├── .gitignore
-├── README.md
-├── docker-compose.yml
-│
-├── sdk/
-│   ├── pyproject.toml
-│   ├── llm_monitor/
-│   │   ├── __init__.py
-│   │   ├── monitor.py
-│   │   ├── wrappers.py
-│   │   ├── shipper.py
-│   │   ├── pricing.py
-│   │   ├── context.py
-│   │   └── models.py
-│   └── tests/
-│       └── test_sdk.py
-│
-├── backend/
-│   ├── Dockerfile
-│   ├── alembic.ini
-│   ├── requirements.txt
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py
-│   │   ├── celery_app.py
-│   │   ├── api/
-│   │   │   ├── __init__.py
-│   │   │   ├── auth.py
-│   │   │   ├── ingest.py
-│   │   │   ├── metrics.py
-│   │   │   ├── projects.py
-│   │   │   └── suggestions.py
-│   │   ├── agents/
-│   │   │   ├── __init__.py
-│   │   │   └── tasks.py
-│   │   ├── core/
-│   │   │   ├── __init__.py
-│   │   │   ├── auth.py
-│   │   │   ├── config.py
-│   │   │   └── database.py
-│   │   └── models/
-│   │       ├── __init__.py
-│   │       ├── db.py
-│   │       └── schemas.py
-│   └── migrations/
-│       ├── env.py
-│       ├── script.py.mako
-│       └── versions/
-│           └── 0001_initial.py
-│
-└── dashboard/
-    ├── Dockerfile
-    ├── next.config.js
-    ├── package.json
-    ├── postcss.config.js
-    ├── tailwind.config.js
-    ├── tsconfig.json
-    └── src/
-        ├── app/
-        │   ├── globals.css
-        │   ├── layout.tsx         ← root layout
-        │   ├── page.tsx           ← login/register page
-        │   └── dashboard/
-        │       ├── layout.tsx     ← sidebar + nav
-        │       ├── page.tsx       ← overview (charts, stats)
-        │       ├── hotspots/
-        │       │   └── page.tsx   ← hot endpoints table
-        │       ├── suggestions/
-        │       │   └── page.tsx   ← simulate & apply
-        │       └── settings/
-        │           └── page.tsx   ← API key + SDK setup
-        └── lib/
-            └── api.ts             ← typed API client
-```
