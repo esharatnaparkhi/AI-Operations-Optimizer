@@ -1,6 +1,6 @@
 # AI Operations Optimizer
 
-LLM Monitor is a lightweight Python SDK for monitoring and optimizing LLM usage in production applications.  
+It is a lightweight Python SDK for monitoring and optimizing LLM usage in production applications.  
 With a single wrapper line, it captures token usage, cost, and latency for OpenAI-compatible calls and sends structured telemetry to a backend where users can analyze performance in a dashboard.
 
 It acts as an observability and optimization layer for LLM systems, similar to how Sentry monitors errors, but focused on LLM efficiency.
