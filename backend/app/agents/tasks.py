@@ -35,8 +35,17 @@ def get_sync_session() -> Session:
 
 @shared_task(name="app.agents.tasks.trigger_metrics_aggregation")
 def trigger_metrics_aggregation(project_id: str) -> None:
-    """Lightweight post-ingest hook — currently a no-op placeholder."""
-    pass
+    """Run heuristic suggestions for a project immediately after each ingest batch."""
+    with get_sync_session() as db:
+        project = db.execute(
+            select(Project).where(Project.id == project_id)
+        ).scalar_one_or_none()
+        if not project:
+            return
+        n = _run_heuristics_for_project(db, project)
+        db.commit()
+        if n:
+            logger.info("Heuristic agent created %d suggestion(s) for project %s", n, project_id)
 
 
 # ── Heuristic Suggestion Agent ────────────────────────────────
@@ -60,14 +69,53 @@ def run_heuristic_agent() -> dict:
     return results
 
 
+# ── Mode thresholds ───────────────────────────────────────────
+
+_MODE_THRESHOLDS = {
+    # instant: fire as soon as there's any signal — useful right after setup
+    "instant": {
+        "days_window":         1,      # look at last 1 day
+        "min_cost":            0.0001, # fire after just $0.0001 spend
+        "max_avg_out_tokens":  50,     # broader definition of "simple task"
+        "latency_ms":          2000,   # flag anything > 2s
+        "latency_min_calls":   1,      # fire after just 1 slow call
+        "spike_multiplier":    1.5,    # flag if today > 1.5× yesterday
+        "spike_min_cost":      0.001,  # flag if spend > $0.001
+    },
+    # balanced: default — needs a week of data and real spend
+    "balanced": {
+        "days_window":         7,
+        "min_cost":            0.01,
+        "max_avg_out_tokens":  25,
+        "latency_ms":          5000,
+        "latency_min_calls":   10,
+        "spike_multiplier":    3.0,
+        "spike_min_cost":      0.05,
+    },
+    # conservative: only surface high-confidence suggestions with lots of data
+    "conservative": {
+        "days_window":         30,
+        "min_cost":            0.10,
+        "max_avg_out_tokens":  15,
+        "latency_ms":          8000,
+        "latency_min_calls":   50,
+        "spike_multiplier":    5.0,
+        "spike_min_cost":      0.20,
+    },
+}
+
+
 def _run_heuristics_for_project(db: Session, project: Project) -> int:
-    """Apply heuristic rules and insert Suggestion rows."""
-    since = (date.today() - timedelta(days=7)).isoformat()
+    """Apply heuristic rules and insert Suggestion rows, respecting the project's suggestion_mode."""
+    mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
+    t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+
+    since = (date.today() - timedelta(days=t["days_window"])).isoformat()
     suggestions_created = 0
 
     # ── Rule 1: Expensive model for simple classification ──────
-    # If a feature_tag's avg output tokens is < 20, it's likely a
-    # classification task — suggest a cheaper model.
+    # If a feature_tag's avg output tokens is low, it's likely a
+    # classification/routing task that doesn't need a frontier model.
     result = db.execute(
         select(
             LLMEvent.feature_tag,
@@ -82,8 +130,8 @@ def _run_heuristics_for_project(db: Session, project: Project) -> int:
             LLMEvent.model.in_(["gpt-4o", "gpt-4-turbo", "claude-3-opus"]),
         )
         .group_by(LLMEvent.feature_tag, LLMEvent.model)
-        .having(func.avg(LLMEvent.output_tokens) < 25)
-        .having(func.sum(LLMEvent.estimated_cost) > 0.01)
+        .having(func.avg(LLMEvent.output_tokens) < t["max_avg_out_tokens"])
+        .having(func.sum(LLMEvent.estimated_cost) > t["min_cost"])
     )
     for row in result.fetchall():
         existing = db.execute(
@@ -97,34 +145,31 @@ def _run_heuristics_for_project(db: Session, project: Project) -> int:
         if existing:
             continue
 
-        # Map to cheaper model
         cheaper = {"gpt-4o": "gpt-4o-mini", "gpt-4-turbo": "gpt-4o-mini", "claude-3-opus": "claude-3-haiku"}
         target = cheaper.get(row.model, "gpt-4o-mini")
-        daily_cost = (row.total_cost / 7)
-        savings_pct = 75.0  # gpt-4o → mini is ~94%, use conservative 75%
+        daily_cost = row.total_cost / max(t["days_window"], 1)
+        savings_pct = 75.0
 
-        sug = Suggestion(
+        db.add(Suggestion(
             project_id=project.id,
             suggestion_type="model_downgrade",
             feature_tag=row.feature_tag,
             title=f"Downgrade '{row.feature_tag}' from {row.model} → {target}",
             description=(
-                f"Feature '{row.feature_tag}' averages only {row.avg_out:.0f} output tokens, "
-                f"suggesting a simple task that doesn't need {row.model}. "
-                f"Switching to {target} could reduce cost by ~{savings_pct:.0f}% "
-                f"with minimal accuracy impact."
+                f"Feature '{row.feature_tag}' averages only {row.avg_out:.0f} output tokens "
+                f"over the last {t['days_window']} day(s), suggesting a simple task that doesn't need {row.model}. "
+                f"Switching to {target} could reduce cost by ~{savings_pct:.0f}% with minimal accuracy impact."
             ),
             current_cost_per_day=daily_cost,
             projected_cost_per_day=daily_cost * (1 - savings_pct / 100),
             estimated_savings_pct=savings_pct,
             accuracy_risk="low",
             confidence=0.85,
-            payload={"current_model": row.model, "target_model": target},
-        )
-        db.add(sug)
+            payload={"current_model": row.model, "target_model": target, "suggestion_mode": mode},
+        ))
         suggestions_created += 1
 
-    # ── Rule 2: High latency endpoint ─────────────────────────
+    # ── Rule 2: High latency feature ───────────────────────────
     result2 = db.execute(
         select(
             LLMEvent.feature_tag,
@@ -136,8 +181,8 @@ def _run_heuristics_for_project(db: Session, project: Project) -> int:
             func.date(LLMEvent.timestamp) >= since,
         )
         .group_by(LLMEvent.feature_tag)
-        .having(func.avg(LLMEvent.latency_ms) > 5000)
-        .having(func.count(LLMEvent.id) > 10)
+        .having(func.avg(LLMEvent.latency_ms) > t["latency_ms"])
+        .having(func.count(LLMEvent.id) >= t["latency_min_calls"])
     )
     for row in result2.fetchall():
         existing = db.execute(
@@ -151,28 +196,26 @@ def _run_heuristics_for_project(db: Session, project: Project) -> int:
         if existing:
             continue
 
-        daily_cost = (row.cost / 7)
-        sug = Suggestion(
+        daily_cost = row.cost / max(t["days_window"], 1)
+        db.add(Suggestion(
             project_id=project.id,
             suggestion_type="latency_optimization",
             feature_tag=row.feature_tag,
             title=f"High latency on '{row.feature_tag}' ({row.avg_lat:.0f}ms avg)",
             description=(
-                f"'{row.feature_tag}' averages {row.avg_lat / 1000:.1f}s — "
-                "consider prompt caching, streaming, or a faster/smaller model."
+                f"'{row.feature_tag}' averages {row.avg_lat / 1000:.1f}s over the last {t['days_window']} day(s) — "
+                "consider prompt caching, streaming, or switching to a faster/smaller model."
             ),
             current_cost_per_day=daily_cost,
             projected_cost_per_day=daily_cost * 0.9,
             estimated_savings_pct=10.0,
             accuracy_risk="low",
             confidence=0.70,
-            payload={"avg_latency_ms": row.avg_lat},
-        )
-        db.add(sug)
+            payload={"avg_latency_ms": row.avg_lat, "suggestion_mode": mode},
+        ))
         suggestions_created += 1
 
-    # ── Rule 3: Cost spike > 3× trailing average ───────────────
-    # Detect today's cost vs 7-day average
+    # ── Rule 3: Cost spike vs trailing average ─────────────────
     today_str = date.today().isoformat()
     r_today = db.execute(
         select(func.sum(LLMEvent.estimated_cost))
@@ -191,7 +234,7 @@ def _run_heuristics_for_project(db: Session, project: Project) -> int:
         )
     ).scalar() or 0.0
 
-    if r_today > r_avg * 3 and r_today > 0.05:
+    if r_today > r_avg * t["spike_multiplier"] and r_today > t["spike_min_cost"]:
         existing = db.execute(
             select(Suggestion).where(
                 Suggestion.project_id == project.id,
@@ -201,12 +244,13 @@ def _run_heuristics_for_project(db: Session, project: Project) -> int:
             )
         ).scalar_one_or_none()
         if not existing:
-            sug = Suggestion(
+            db.add(Suggestion(
                 project_id=project.id,
                 suggestion_type="anomaly_alert",
-                title=f"Cost spike detected today (${r_today:.2f} vs ${r_avg:.2f} avg)",
+                title=f"Cost spike detected today (${r_today:.4f} vs ${r_avg:.4f} trailing avg)",
                 description=(
-                    f"Today's cost is {r_today / max(r_avg, 0.001):.1f}× the 7-day average. "
+                    f"Today's cost is {r_today / max(r_avg, 0.0001):.1f}× the trailing average "
+                    f"over the last {t['days_window']} day(s). "
                     "Check for runaway loops, traffic spikes, or misconfigured prompts."
                 ),
                 current_cost_per_day=r_today,
@@ -214,9 +258,8 @@ def _run_heuristics_for_project(db: Session, project: Project) -> int:
                 estimated_savings_pct=0.0,
                 accuracy_risk="medium",
                 confidence=0.90,
-                payload={"today": r_today, "avg": r_avg},
-            )
-            db.add(sug)
+                payload={"today": r_today, "trailing_avg": r_avg, "suggestion_mode": mode},
+            ))
             suggestions_created += 1
 
     return suggestions_created

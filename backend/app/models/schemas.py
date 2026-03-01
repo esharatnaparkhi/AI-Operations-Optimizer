@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, List, Optional
 from pydantic import BaseModel, EmailStr, Field
-
+from uuid import UUID
 
 # ── Auth ──────────────────────────────────────────────────────
 
@@ -15,7 +15,7 @@ class UserCreate(BaseModel):
 
 
 class UserResponse(BaseModel):
-    id: str
+    id: UUID
     email: str
     name: Optional[str]
     is_active: bool
@@ -41,13 +41,18 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectResponse(BaseModel):
-    id: str
+    id: UUID
     name: str
     api_key: str
     created_at: datetime
+    suggestion_mode: str = "balanced"
 
     class Config:
         from_attributes = True
+
+
+class ProjectUpdateMode(BaseModel):
+    suggestion_mode: str = Field(pattern="^(instant|balanced|conservative)$")
 
 
 # ── Ingest ────────────────────────────────────────────────────
@@ -116,7 +121,7 @@ class OverviewResponse(BaseModel):
 # ── Suggestions ───────────────────────────────────────────────
 
 class SuggestionResponse(BaseModel):
-    id: str
+    id: UUID
     suggestion_type: str
     feature_tag: Optional[str]
     title: str

@@ -21,13 +21,11 @@ celery_app.conf.update(
         "app.agents.tasks.*": {"queue": "agents"},
     },
     beat_schedule={
-        "run-heuristics-every-hour": {
+        # Heuristics now run per-project on every ingest via trigger_metrics_aggregation.
+        # Keep a daily sweep to catch any projects with stale/missed data.
+        "run-heuristics-daily-sweep": {
             "task": "app.agents.tasks.run_heuristic_agent",
-            "schedule": 3600.0,
-        },
-        "run-anomaly-check-every-5min": {
-            "task": "app.agents.tasks.run_anomaly_agent",
-            "schedule": 300.0,
+            "schedule": 86400.0,
         },
     },
 )

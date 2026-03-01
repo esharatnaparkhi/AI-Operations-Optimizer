@@ -4,7 +4,7 @@ Metrics API: timeseries, overview, hotspots.
 from datetime import date, timedelta, datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,9 +17,8 @@ router = APIRouter(prefix="/api/v1/metrics", tags=["metrics"])
 
 
 async def _get_project(project_id: str, user_id: str, db: AsyncSession):
-    from sqlalchemy import select as sel
     r = await db.execute(
-        sel(Project).where(Project.id == project_id, Project.owner_id == user_id)
+        select(Project).where(Project.id == project_id, Project.owner_id == user_id)
     )
     return r.scalar_one_or_none()
 
@@ -30,10 +29,16 @@ async def get_overview(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    today = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    if not await _get_project(project_id, user_id, db):
+        raise HTTPException(status_code=404, detail="Project not found")
 
-    def _day_query(d: str):
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+
+    def _day_query(day: date):
+        start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+
         return select(
             func.sum(LLMEvent.estimated_cost).label("cost"),
             func.sum(LLMEvent.total_tokens).label("tokens"),
@@ -41,7 +46,8 @@ async def get_overview(
             func.avg(LLMEvent.latency_ms).label("avg_latency"),
         ).where(
             LLMEvent.project_id == project_id,
-            func.date(LLMEvent.timestamp) == d,
+            LLMEvent.timestamp >= start,
+            LLMEvent.timestamp < end,
         )
 
     r_today = await db.execute(_day_query(today))
@@ -79,7 +85,10 @@ async def get_timeseries(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    since = (date.today() - timedelta(days=days)).isoformat()
+    if not await _get_project(project_id, user_id, db):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     result = await db.execute(
         select(
@@ -94,7 +103,7 @@ async def get_timeseries(
         )
         .where(
             LLMEvent.project_id == project_id,
-            func.date(LLMEvent.timestamp) >= since,
+            LLMEvent.timestamp >= since,
         )
         .group_by(func.date(LLMEvent.timestamp))
         .order_by(func.date(LLMEvent.timestamp))
@@ -121,11 +130,16 @@ async def get_hotspots(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    since = (date.today() - timedelta(days=days)).isoformat()
+    if not await _get_project(project_id, user_id, db):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    feature_expr = func.coalesce(LLMEvent.feature_tag, "__untagged__")
 
     result = await db.execute(
         select(
-            func.coalesce(LLMEvent.feature_tag, "__untagged__").label("feature_tag"),
+            feature_expr.label("feature_tag"),
             func.sum(LLMEvent.estimated_cost).label("total_cost"),
             func.sum(LLMEvent.total_tokens).label("total_tokens"),
             func.count(LLMEvent.id).label("total_calls"),
@@ -133,12 +147,13 @@ async def get_hotspots(
         )
         .where(
             LLMEvent.project_id == project_id,
-            func.date(LLMEvent.timestamp) >= since,
+            LLMEvent.timestamp >= since,
         )
-        .group_by(func.coalesce(LLMEvent.feature_tag, "__untagged__"))
+        .group_by(feature_expr)
         .order_by(func.sum(LLMEvent.estimated_cost).desc())
         .limit(limit)
     )
+
     return [
         HotspotItem(
             feature_tag=r.feature_tag,

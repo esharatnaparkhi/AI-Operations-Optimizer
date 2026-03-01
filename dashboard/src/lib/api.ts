@@ -52,6 +52,11 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ name }),
       }),
+    updateMode: (projectId: string, suggestion_mode: string) =>
+      request<Project>(`/api/v1/projects/${projectId}/mode`, {
+        method: "PATCH",
+        body: JSON.stringify({ suggestion_mode }),
+      }),
   },
 
   metrics: {
@@ -88,6 +93,7 @@ export interface Project {
   name: string;
   api_key: string;
   created_at: string;
+  suggestion_mode: string;
 }
 
 export interface Overview {

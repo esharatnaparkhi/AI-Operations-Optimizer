@@ -27,7 +27,7 @@ class EventShipper:
         endpoint: str,
         api_key: str,
         max_batch_size: int = 50,
-        flush_interval_secs: float = 5.0,
+        flush_interval_secs: float = 0.5,
         timeout_secs: float = 5.0,
         sampling_rate: float = 1.0,
     ):

@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from ..core.database import get_db
 from ..core.auth import get_current_user_id
-from ..models.schemas import ProjectCreate, ProjectResponse
+from ..models.schemas import ProjectCreate, ProjectResponse, ProjectUpdateMode
 from ..models.db import Project
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -46,4 +46,22 @@ async def get_project(
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(404, "Project not found")
+    return project
+
+
+@router.patch("/{project_id}/mode", response_model=ProjectResponse)
+async def update_suggestion_mode(
+    project_id: str,
+    body: ProjectUpdateMode,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Project).where(Project.id == project_id, Project.owner_id == user_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    project.suggestion_mode = body.suggestion_mode
+    await db.flush()
     return project

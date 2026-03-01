@@ -49,6 +49,13 @@ async def simulate_suggestion(
     if not sug:
         raise HTTPException(404, "Suggestion not found")
 
+    # Verify the suggestion's project belongs to the current user
+    owner_check = await db.execute(
+        select(Project).where(Project.id == sug.project_id, Project.owner_id == user_id)
+    )
+    if not owner_check.scalar_one_or_none():
+        raise HTTPException(404, "Suggestion not found")
+
     # Run simulation (simple projection from stored data)
     current = sug.current_cost_per_day or 0.0
     projected = sug.projected_cost_per_day or current
@@ -84,6 +91,13 @@ async def apply_suggestion(
     if not sug:
         raise HTTPException(404, "Suggestion not found")
 
+    # Verify the suggestion's project belongs to the current user
+    owner_check = await db.execute(
+        select(Project).where(Project.id == sug.project_id, Project.owner_id == user_id)
+    )
+    if not owner_check.scalar_one_or_none():
+        raise HTTPException(404, "Suggestion not found")
+
     snippet = None
     if body.apply_mode == "snippet":
         snippet = _generate_snippet(sug)
@@ -112,6 +126,14 @@ async def dismiss_suggestion(
     sug = result.scalar_one_or_none()
     if not sug:
         raise HTTPException(404)
+
+    # Verify the suggestion's project belongs to the current user
+    owner_check = await db.execute(
+        select(Project).where(Project.id == sug.project_id, Project.owner_id == user_id)
+    )
+    if not owner_check.scalar_one_or_none():
+        raise HTTPException(404)
+
     sug.status = "dismissed"
     await db.flush()
 

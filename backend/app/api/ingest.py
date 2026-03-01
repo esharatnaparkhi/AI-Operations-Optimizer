@@ -2,6 +2,7 @@
 POST /api/v1/ingest  — receive batched SDK events.
 Validates the project key, stores events, queues agent tasks.
 """
+import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,7 @@ from ..models.db import LLMEvent, Project
 from ..agents.tasks import trigger_metrics_aggregation
 
 router = APIRouter(prefix="/api/v1/ingest", tags=["ingest"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=IngestResponse)
@@ -70,7 +72,7 @@ async def ingest_events(
     if queued:
         try:
             trigger_metrics_aggregation.delay(str(project.id))
-        except Exception:
-            pass  # Celery may not be running in dev — that's OK
+        except Exception as exc:
+            logger.debug("Could not enqueue aggregation task (Celery may not be running): %s", exc)
 
     return IngestResponse(received=len(body.events), queued=queued)

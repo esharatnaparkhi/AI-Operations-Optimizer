@@ -1,6 +1,7 @@
 """JWT auth helpers."""
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import uuid
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -62,7 +63,10 @@ async def get_current_user_id(
     user_id: Optional[str] = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
-    return user_id
+    try:
+        return uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
 
 
 # Lightweight project-key auth (SDK → ingest endpoint)
