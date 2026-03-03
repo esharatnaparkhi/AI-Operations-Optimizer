@@ -4,7 +4,7 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import {
   LayoutDashboard, Flame, Lightbulb, Settings, LogOut,
-  ChevronDown, Plus, Activity, X, Check
+  ChevronDown, Plus, Activity, X, Check, Trash2
 } from "lucide-react";
 import { api, Project } from "@/lib/api";
 
@@ -24,6 +24,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [creatingProject, setCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -72,6 +73,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setNewProjectName("");
   }
 
+  async function handleDeleteProject(projectId: string) {
+    await api.projects.delete(projectId);
+    const remaining = projects.filter((p) => p.id !== projectId);
+    setProjects(remaining);
+    setConfirmDeleteId(null);
+    if (activeProject?.id === projectId) {
+      const next = remaining[0] || null;
+      setActiveProject(next);
+      if (next) localStorage.setItem("active_project", next.id);
+      else localStorage.removeItem("active_project");
+    }
+  }
+
   return (
     <div className="flex h-screen bg-gray-950 overflow-hidden">
       {/* Sidebar */}
@@ -101,20 +115,46 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           {showProjects && (
             <div className="mt-1 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
               {projects.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    setActiveProject(p);
-                    localStorage.setItem("active_project", p.id);
-                    setShowProjects(false);
-                  }}
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-800 transition-colors flex items-center gap-2 ${
-                    p.id === activeProject?.id ? "text-brand-400" : "text-gray-300"
-                  }`}
-                >
-                  {p.id === activeProject?.id && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 flex-shrink-0" />}
-                  <span className="truncate">{p.name}</span>
-                </button>
+                <div key={p.id} className="flex items-center group">
+                  <button
+                    onClick={() => {
+                      setActiveProject(p);
+                      localStorage.setItem("active_project", p.id);
+                      setShowProjects(false);
+                      setConfirmDeleteId(null);
+                    }}
+                    className={`flex-1 text-left px-3 py-2 text-sm hover:bg-gray-800 transition-colors flex items-center gap-2 min-w-0 ${
+                      p.id === activeProject?.id ? "text-brand-400" : "text-gray-300"
+                    }`}
+                  >
+                    {p.id === activeProject?.id && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 flex-shrink-0" />}
+                    <span className="truncate">{p.name}</span>
+                  </button>
+                  {confirmDeleteId === p.id ? (
+                    <div className="flex items-center gap-1 pr-2 flex-shrink-0">
+                      <button
+                        onClick={() => handleDeleteProject(p.id)}
+                        className="text-[10px] px-1.5 py-0.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="text-[10px] px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(p.id); }}
+                      className="pr-2 opacity-0 group-hover:opacity-100 transition-opacity text-gray-600 hover:text-red-400 flex-shrink-0"
+                      title="Delete project"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
               ))}
 
               {creatingProject ? (

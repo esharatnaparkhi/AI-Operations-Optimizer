@@ -5,7 +5,7 @@ from datetime import date, timedelta, datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import get_db
@@ -98,7 +98,7 @@ async def get_timeseries(
             func.sum(LLMEvent.estimated_cost).label("total_cost"),
             func.avg(LLMEvent.latency_ms).label("avg_latency_ms"),
             func.sum(
-                func.cast(LLMEvent.error.isnot(None), func.Integer)
+                case((LLMEvent.error.isnot(None), 1), else_=0)
             ).label("error_count"),
         )
         .where(
@@ -164,3 +164,31 @@ async def get_hotspots(
         )
         for r in result.fetchall()
     ]
+
+
+@router.delete("/{project_id}/feature/{feature_tag}", status_code=204)
+async def delete_feature_tag(
+    project_id: str,
+    feature_tag: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete all LLM events for a given feature tag in this project."""
+    if not await _get_project(project_id, user_id, db):
+        raise HTTPException(404, "Project not found")
+
+    if feature_tag == "__untagged__":
+        await db.execute(
+            delete(LLMEvent).where(
+                LLMEvent.project_id == project_id,
+                LLMEvent.feature_tag.is_(None),
+            )
+        )
+    else:
+        await db.execute(
+            delete(LLMEvent).where(
+                LLMEvent.project_id == project_id,
+                LLMEvent.feature_tag == feature_tag,
+            )
+        )
+    await db.flush()

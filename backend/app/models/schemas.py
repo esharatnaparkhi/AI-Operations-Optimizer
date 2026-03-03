@@ -146,8 +146,9 @@ class SimulateRequest(BaseModel):
 
 class SimulateResponse(BaseModel):
     suggestion_id: str
+    current_monthly_cost: float       # current (before fix) monthly cost
     projected_daily_cost: float
-    projected_monthly_cost: float
+    projected_monthly_cost: float     # after-fix monthly cost
     savings_usd_monthly: float
     savings_pct: float
     accuracy_risk: str

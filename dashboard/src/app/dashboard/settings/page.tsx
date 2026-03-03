@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Copy, Check, Key, Terminal, Code, Package, Zap, Clock } from "lucide-react";
+import { Copy, Check, Key, Zap, Clock } from "lucide-react";
 import { api, Project } from "@/lib/api";
 
 const FIXED_MODES = [
@@ -21,52 +21,6 @@ const FIXED_MODES = [
     color: "text-brand-400 border-brand-400/40 bg-brand-400/5",
   },
 ] as const;
-
-function CodeBlock({ code, language = "bash" }: { code: string; language?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="relative">
-      <pre className="bg-gray-950 border border-gray-800 rounded-lg p-4 text-xs text-green-300 overflow-auto leading-relaxed">
-        {code}
-      </pre>
-      <button
-        onClick={() => {
-          navigator.clipboard.writeText(code);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        }}
-        className="absolute top-2 right-2 flex items-center gap-1 text-xs px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
-      >
-        {copied ? <Check size={11} /> : <Copy size={11} />}
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
-  );
-}
-
-function Step({ number, icon: Icon, title, description, children }: {
-  number: number;
-  icon: React.ElementType;
-  title: string;
-  description: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-3">
-        <div className="w-7 h-7 rounded-full bg-brand-600/20 border border-brand-600/30 flex items-center justify-center text-brand-400 font-bold text-xs flex-shrink-0">
-          {number}
-        </div>
-        <Icon size={14} className="text-gray-500" />
-        <div>
-          <h2 className="text-sm font-semibold text-white">{title}</h2>
-          <p className="text-xs text-gray-500">{description}</p>
-        </div>
-      </div>
-      <div className="ml-10">{children}</div>
-    </section>
-  );
-}
 
 export default function SettingsPage() {
   const [project, setProject] = useState<Project | null>(null);
@@ -112,49 +66,11 @@ export default function SettingsPage() {
     await handleModeChange(`${h}h`);
   }
 
-  const installCode = `pip install llm-monitor-sdk`;
-
-  const usageCode = `import openai
-from llm_monitor import LLMMonitor, feature_tag
-
-# 1. Initialize once at app startup
-monitor = LLMMonitor(
-    api_key="${project.api_key}",
-    endpoint="http://localhost:8000",  # your backend URL
-)
-
-# 2. Wrap your OpenAI client — just one line
-client = monitor.wrap_openai(openai.OpenAI())
-
-# 3. Use the client exactly as before — monitoring is automatic
-with feature_tag("summarize"):          # optional: tag features for breakdown
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": "Summarize this..."}],
-    )
-
-# You can also pass the tag via a request header
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "Classify this..."}],
-    extra_headers={"X-Feature-Tag": "classify"},
-)`;
-
-  const manualCode = `# For providers not yet auto-wrapped (e.g. Cohere, Mistral)
-monitor.track(
-    provider="cohere",
-    model="command-r-plus",
-    input_tokens=512,
-    output_tokens=128,
-    latency_ms=340.5,
-    feature_tag="rag-search",  # optional
-)`;
-
   return (
     <div className="p-6 space-y-8 max-w-2xl">
       <div>
-        <h1 className="text-xl font-bold text-white">Settings & SDK Setup</h1>
-        <p className="text-sm text-gray-400">Connect the SDK to start tracking your LLM costs and latency</p>
+        <h1 className="text-xl font-bold text-white">Settings</h1>
+        <p className="text-sm text-gray-400">Manage your project API key and suggestion preferences</p>
       </div>
 
       {/* Suggestion Frequency */}
@@ -173,7 +89,6 @@ monitor.track(
           )}
         </div>
 
-        {/* Fixed options */}
         <div className="grid grid-cols-1 gap-3">
           {FIXED_MODES.map((m) => {
             const active = (project.suggestion_mode || "instant") === m.value;
@@ -270,11 +185,11 @@ monitor.track(
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
         <div className="flex items-center gap-2">
           <Key size={14} className="text-brand-400" />
-          <h2 className="text-sm font-semibold text-white">Your Project API Key</h2>
+          <h2 className="text-sm font-semibold text-white">Project API Key</h2>
         </div>
         <p className="text-xs text-gray-400">
-          Pass this as <code className="bg-gray-800 px-1.5 py-0.5 rounded text-gray-200">api_key</code> when initialising the SDK.
-          Keep it secret — it authenticates all SDK calls to this project.
+          Pass this as <code className="bg-gray-800 px-1.5 py-0.5 rounded text-gray-200">api_key</code> when
+          initialising the SDK. Keep it secret — it authenticates all SDK calls to this project.
         </p>
         <div className="flex items-center gap-2">
           <div className="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-300 truncate">
@@ -296,26 +211,6 @@ monitor.track(
         </div>
       </section>
 
-      {/* Steps */}
-      <Step number={1} icon={Terminal} title="Install the SDK" description="Supports Python 3.9+">
-        <CodeBlock code={installCode} />
-      </Step>
-
-      <Step number={2} icon={Code} title="Instrument your code" description="Wrap your LLM client — no other changes needed">
-        <CodeBlock code={usageCode} language="python" />
-        <div className="mt-3 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2.5 space-y-1">
-          <p className="text-xs text-gray-400 font-medium">What are feature tags?</p>
-          <p className="text-xs text-gray-500 leading-relaxed">
-            Tags group calls by feature (e.g. "summarize", "classify") so you can see cost per feature in the
-            Cost Hotspots page. They're optional but highly recommended.
-          </p>
-        </div>
-      </Step>
-
-      <Step number={3} icon={Package} title="Manual tracking (optional)" description="For providers without an auto-wrap (Cohere, Mistral, etc.)">
-        <CodeBlock code={manualCode} language="python" />
-      </Step>
-
       {/* Project info */}
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-2">
         <h2 className="text-sm font-semibold text-white mb-3">Project Info</h2>
@@ -329,7 +224,9 @@ monitor.track(
         </div>
         <div className="flex justify-between py-1.5">
           <span className="text-xs text-gray-500">Created</span>
-          <span className="text-xs text-gray-300">{new Date(project.created_at).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</span>
+          <span className="text-xs text-gray-300">
+            {new Date(project.created_at).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
+          </span>
         </div>
       </section>
     </div>

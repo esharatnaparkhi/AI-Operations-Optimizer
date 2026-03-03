@@ -413,25 +413,40 @@ You have tools to query usage data and save suggestions into the database.
 Rules you MUST follow:
 1. Always call pending_suggestion_exists before calling save_suggestion to avoid duplicates.
    If it returns 'true', skip that suggestion.
+
 2. model_downgrade suggestions:
      accuracy_risk='low', confidence=0.85, estimated_savings_pct=75.0
+     current_cost_per_day = the 'daily_cost' field returned by find_expensive_model_features
      projected_cost_per_day = current_cost_per_day * 0.25
-     payload_json must include current_model, target_model, suggestion_mode.
+     payload_json must include these exact keys (use the tool output values):
+       current_model  (= the 'model' field from the tool),
+       target_model   (= the 'target_model' field from the tool),
+       avg_out_tokens (= the 'avg_out_tokens' field from the tool),
+       suggestion_mode (= the 'suggestion_mode' field from the tool).
+
 3. latency_optimization suggestions:
      accuracy_risk='low', confidence=0.70, estimated_savings_pct=10.0
+     current_cost_per_day = the 'daily_cost' field returned by find_high_latency_features
      projected_cost_per_day = current_cost_per_day * 0.9
-     payload_json must include avg_latency_ms, suggestion_mode.
+     payload_json must include:
+       avg_latency_ms (from tool), daily_cost (from tool), suggestion_mode (from tool).
+
 4. anomaly_alert suggestions:
      accuracy_risk='medium', confidence=0.90, estimated_savings_pct=0.0
-     current_cost_per_day = projected_cost_per_day = today's cost
-     feature_tag must be empty string.
-     payload_json must include today, trailing_avg, suggestion_mode.
+     current_cost_per_day  = the 'today_cost' field from detect_cost_spike
+     projected_cost_per_day = the 'trailing_avg' field from detect_cost_spike
+     feature_tag must be empty string "".
+     payload_json must include:
+       today_cost (from tool), trailing_avg (from tool),
+       multiplier (from tool), suggestion_mode (from tool).
+
 5. prompt_compress suggestions:
      Only save if savings_pct > 10.
      accuracy_risk='medium', confidence=0.65
      current_cost_per_day=0.0, projected_cost_per_day=0.0
-     payload_json must include original_tokens, compressed_tokens, compressed_prompt.
-6. payload_json must always be a valid JSON string (use double quotes).
+     payload_json must include: original_tokens, compressed_tokens, compressed_prompt.
+
+6. payload_json must always be a valid JSON string (use double quotes for all keys and string values).
 7. Complete all requested work before stopping."""
 
 

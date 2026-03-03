@@ -57,6 +57,8 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ suggestion_mode }),
       }),
+    delete: (projectId: string) =>
+      request(`/api/v1/projects/${projectId}`, { method: "DELETE" }),
   },
 
   metrics: {
@@ -66,6 +68,10 @@ export const api = {
       request<DailyMetric[]>(`/api/v1/metrics/${projectId}/timeseries?days=${days}`),
     hotspots: (projectId: string, days = 7) =>
       request<Hotspot[]>(`/api/v1/metrics/${projectId}/hotspots?days=${days}`),
+    deleteFeatureTag: (projectId: string, featureTag: string) =>
+      request(`/api/v1/metrics/${projectId}/feature/${encodeURIComponent(featureTag)}`, {
+        method: "DELETE",
+      }),
   },
 
   suggestions: {
@@ -140,6 +146,7 @@ export interface Suggestion {
 
 export interface SimulateResult {
   suggestion_id: string;
+  current_monthly_cost: number;
   projected_daily_cost: number;
   projected_monthly_cost: number;
   savings_usd_monthly: number;

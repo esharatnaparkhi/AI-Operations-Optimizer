@@ -4,15 +4,17 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, AreaChart, Area
 } from "recharts";
-import { TrendingUp, TrendingDown, DollarSign, Zap, Clock, Activity, ArrowRight } from "lucide-react";
-import Link from "next/link";
-import { api, Overview, DailyMetric } from "@/lib/api";
+import {
+  TrendingUp, TrendingDown, DollarSign, Zap, Clock,
+  Activity, Copy, Check, ChevronDown, ChevronUp, Terminal, Code, Package
+} from "lucide-react";
+import { api, Overview, DailyMetric, Project } from "@/lib/api";
 
-/** Always shows 7 decimal places for cost values */
 function fmtCost(n: number): string {
-  if (n === 0) return "$0.0000000";
-  if (n >= 1) return `$${n.toFixed(7)}`;
-  return `$${n.toFixed(7)}`;
+  if (n === 0) return "$0.00";
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(6)}`;
 }
 
 function StatCard({
@@ -56,7 +58,7 @@ function EfficiencyRing({ score }: { score: number }) {
   const label = score >= 75
     ? "Good — latency is healthy"
     : score >= 50
-    ? "Fair — check the Suggestions page for optimizations"
+    ? "Fair — check Suggestions for optimizations"
     : "Poor — high latency detected, review Cost Hotspots";
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center gap-5">
@@ -83,9 +85,128 @@ function EfficiencyRing({ score }: { score: number }) {
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+      className="absolute top-2 right-2 flex items-center gap-1 text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+    >
+      {copied ? <Check size={10} /> : <Copy size={10} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function QuickStart({ apiKey }: { apiKey: string }) {
+  const [open, setOpen] = useState(false);
+
+  const installCode = `pip install llm-monitor-sdk`;
+  const usageCode = `import openai
+from llm_monitor import LLMMonitor, feature_tag
+
+# 1. Initialize once at app startup
+monitor = LLMMonitor(
+    api_key="${apiKey}",
+    endpoint="http://localhost:8000",
+)
+
+# 2. Wrap your OpenAI client — just one line
+client = monitor.wrap_openai(openai.OpenAI())
+
+# 3. Use the client exactly as before
+with feature_tag("summarize"):
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Summarize this..."}],
+    )`;
+  const manualCode = `# For providers not yet auto-wrapped (Cohere, Mistral, etc.)
+monitor.track(
+    provider="cohere",
+    model="command-r-plus",
+    input_tokens=512,
+    output_tokens=128,
+    latency_ms=340.5,
+    feature_tag="rag-search",
+)`;
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-800/50 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-6 h-6 rounded-md bg-brand-600/20 flex items-center justify-center">
+            <Terminal size={13} className="text-brand-400" />
+          </div>
+          <div className="text-left">
+            <div className="text-sm font-semibold text-white">SDK Quick Start</div>
+            <div className="text-xs text-gray-500">Install, instrument, and start tracking in minutes</div>
+          </div>
+        </div>
+        {open ? <ChevronUp size={15} className="text-gray-500" /> : <ChevronDown size={15} className="text-gray-500" />}
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 space-y-5 border-t border-gray-800">
+          {/* Step 1 */}
+          <div className="pt-4 space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-full bg-brand-600/20 border border-brand-600/30 flex items-center justify-center text-brand-400 text-[10px] font-bold">1</div>
+              <Terminal size={13} className="text-gray-500" />
+              <div>
+                <span className="text-xs font-semibold text-white">Install the SDK</span>
+                <span className="text-xs text-gray-500 ml-2">Python 3.9+</span>
+              </div>
+            </div>
+            <div className="relative ml-7">
+              <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-green-300 overflow-auto">{installCode}</pre>
+              <CopyButton text={installCode} />
+            </div>
+          </div>
+
+          {/* Step 2 */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-full bg-brand-600/20 border border-brand-600/30 flex items-center justify-center text-brand-400 text-[10px] font-bold">2</div>
+              <Code size={13} className="text-gray-500" />
+              <div>
+                <span className="text-xs font-semibold text-white">Instrument your code</span>
+                <span className="text-xs text-gray-500 ml-2">Wrap your LLM client — no other changes needed</span>
+              </div>
+            </div>
+            <div className="relative ml-7">
+              <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-green-300 overflow-auto leading-relaxed">{usageCode}</pre>
+              <CopyButton text={usageCode} />
+            </div>
+          </div>
+
+          {/* Step 3 */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-full bg-brand-600/20 border border-brand-600/30 flex items-center justify-center text-brand-400 text-[10px] font-bold">3</div>
+              <Package size={13} className="text-gray-500" />
+              <div>
+                <span className="text-xs font-semibold text-white">Manual tracking</span>
+                <span className="text-xs text-gray-500 ml-2">Optional — for providers without auto-wrap</span>
+              </div>
+            </div>
+            <div className="relative ml-7">
+              <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs text-green-300 overflow-auto">{manualCode}</pre>
+              <CopyButton text={manualCode} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [timeseries, setTimeseries] = useState<DailyMetric[]>([]);
+  const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -97,9 +218,11 @@ export default function DashboardPage() {
     Promise.all([
       api.metrics.overview(projectId),
       api.metrics.timeseries(projectId, 14),
-    ]).then(([ov, ts]) => {
+      api.projects.list(),
+    ]).then(([ov, ts, ps]) => {
       setOverview(ov);
       setTimeseries(ts);
+      setProject(ps.find((p) => p.id === projectId) || null);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -111,45 +234,36 @@ export default function DashboardPage() {
     );
   }
 
-  if (!overview || (overview.today_calls === 0 && timeseries.length === 0)) {
-    return (
-      <div className="p-8 max-w-2xl">
-        <h1 className="text-xl font-bold text-white mb-1">Overview</h1>
-        <p className="text-sm text-gray-500 mb-8">{today}</p>
+  const apiKey = project?.api_key ?? "YOUR_API_KEY";
+  const noData = !overview || (overview.today_calls === 0 && timeseries.length === 0);
 
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
+  if (noData) {
+    return (
+      <div className="p-8 max-w-2xl space-y-6">
+        <div>
+          <h1 className="text-xl font-bold text-white mb-1">Overview</h1>
+          <p className="text-sm text-gray-500">{today}</p>
+        </div>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-brand-600/20 rounded-lg flex items-center justify-center">
               <Zap size={16} className="text-brand-400" />
             </div>
             <div>
               <p className="text-sm font-semibold text-white">No data yet</p>
-              <p className="text-xs text-gray-400">Install the SDK and make LLM calls to see metrics here.</p>
+              <p className="text-xs text-gray-400">Follow the quick start below to start tracking your LLM usage.</p>
             </div>
           </div>
-          <div className="border-t border-gray-800 pt-4">
-            <p className="text-xs text-gray-500 mb-3">Quick start (Python):</p>
-            <pre className="bg-gray-950 border border-gray-800 rounded-lg p-4 text-xs text-green-400 overflow-auto">
-{`pip install llm-monitor-sdk
-
-from llm_monitor import LLMMonitor
-import openai
-
-monitor = LLMMonitor(api_key="YOUR_PROJECT_KEY")
-client = monitor.wrap_openai(openai.OpenAI())
-# That's it — all calls are now tracked automatically`}
-            </pre>
-          </div>
-          <Link
-            href="/dashboard/settings"
-            className="inline-flex items-center gap-1.5 text-xs text-brand-400 hover:text-brand-300 transition-colors"
-          >
-            Get your API key in Settings <ArrowRight size={12} />
-          </Link>
         </div>
+        <QuickStart apiKey={apiKey} />
       </div>
     );
   }
+
+  const monthlyCostProjection = (overview.today_cost || 0) * 30;
+  const costPerCall = overview.today_calls > 0
+    ? overview.today_cost / overview.today_calls
+    : 0;
 
   return (
     <div className="p-6 space-y-6">
@@ -170,15 +284,17 @@ client = monitor.wrap_openai(openai.OpenAI())
           tooltip="Total estimated USD spend on LLM API calls today"
         />
         <StatCard
-          label="Tokens used"
-          value={overview.today_tokens.toLocaleString()}
-          icon={Zap}
+          label="Monthly projection"
+          value={fmtCost(monthlyCostProjection)}
+          sub="based on today's spend"
+          icon={TrendingUp}
           color="yellow"
-          tooltip="Total input + output tokens consumed today"
+          tooltip="Today's cost × 30 — a rough monthly cost estimate"
         />
         <StatCard
-          label="API calls"
+          label="API calls today"
           value={overview.today_calls.toLocaleString()}
+          sub={`${fmtCost(costPerCall)} / call avg`}
           icon={Activity}
           color="green"
           tooltip="Number of LLM API calls made today"
@@ -186,15 +302,35 @@ client = monitor.wrap_openai(openai.OpenAI())
         <StatCard
           label="Avg latency"
           value={`${Math.round(overview.avg_latency_ms)}ms`}
+          sub="average response time"
           icon={Clock}
           color="purple"
-          sub="average response time"
           tooltip="Mean time from request to first response token"
         />
       </div>
 
-      {/* Efficiency ring */}
-      <EfficiencyRing score={overview.efficiency_score} />
+      {/* Secondary stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <StatCard
+          label="Tokens used today"
+          value={overview.today_tokens.toLocaleString()}
+          sub={overview.today_calls > 0 ? `${Math.round(overview.today_tokens / overview.today_calls)} avg per call` : undefined}
+          icon={Zap}
+          color="brand"
+          tooltip="Total input + output tokens consumed today"
+        />
+        <StatCard
+          label="Cost per 1K tokens"
+          value={overview.today_tokens > 0 ? fmtCost((overview.today_cost / overview.today_tokens) * 1000) : "—"}
+          sub="blended input + output rate"
+          icon={DollarSign}
+          color="green"
+          tooltip="Average cost per 1,000 tokens across all models today"
+        />
+        <div className="col-span-2 lg:col-span-1">
+          <EfficiencyRing score={overview.efficiency_score} />
+        </div>
+      </div>
 
       {/* Charts */}
       {timeseries.length > 0 && (
@@ -217,7 +353,7 @@ client = monitor.wrap_openai(openai.OpenAI())
                 <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                 <XAxis dataKey="date" tick={{ fill: "#6b7280", fontSize: 11 }} tickLine={false} axisLine={false} />
                 <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} tickLine={false} axisLine={false}
-                  tickFormatter={(v) => `$${v.toFixed(3)}`} />
+                  tickFormatter={(v) => `$${v.toFixed(4)}`} />
                 <Tooltip
                   contentStyle={{ background: "#111827", border: "1px solid #374151", borderRadius: "8px" }}
                   labelStyle={{ color: "#9ca3af" }}
@@ -267,6 +403,9 @@ client = monitor.wrap_openai(openai.OpenAI())
           </div>
         </>
       )}
+
+      {/* SDK Quick Start — always available at the bottom */}
+      <QuickStart apiKey={apiKey} />
     </div>
   );
 }

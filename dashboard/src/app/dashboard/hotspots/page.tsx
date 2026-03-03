@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import { Info } from "lucide-react";
+import { Info, Trash2 } from "lucide-react";
 import { api, Hotspot } from "@/lib/api";
 
 function LatencyBadge({ ms }: { ms: number }) {
@@ -22,6 +22,7 @@ export default function HotspotsPage() {
   const [hotspots, setHotspots] = useState<Hotspot[]>([]);
   const [days, setDays] = useState(7);
   const [loading, setLoading] = useState(true);
+  const [confirmDeleteTag, setConfirmDeleteTag] = useState<string | null>(null);
 
   useEffect(() => {
     const projectId = localStorage.getItem("active_project");
@@ -29,6 +30,14 @@ export default function HotspotsPage() {
     setLoading(true);
     api.metrics.hotspots(projectId, days).then(setHotspots).finally(() => setLoading(false));
   }, [days]);
+
+  async function handleDeleteTag(featureTag: string) {
+    const projectId = localStorage.getItem("active_project");
+    if (!projectId) return;
+    await api.metrics.deleteFeatureTag(projectId, featureTag);
+    setHotspots((prev) => prev.filter((h) => h.feature_tag !== featureTag));
+    setConfirmDeleteTag(null);
+  }
 
   const chartData = hotspots.slice(0, 8).map((h) => ({
     name: h.feature_tag === "__untagged__"
@@ -134,14 +143,16 @@ export default function HotspotsPage() {
                   <th className="text-right px-4 py-3 font-medium">Tokens</th>
                   <th className="text-right px-4 py-3 font-medium">Calls</th>
                   <th className="text-right px-4 py-3 font-medium">Avg latency</th>
+                  <th className="px-4 py-3" />
                 </tr>
               </thead>
               <tbody>
                 {hotspots.map((h, i) => {
                   const sharePct = totalCost > 0 ? (h.total_cost / totalCost) * 100 : 0;
                   const displayTag = h.feature_tag === "__untagged__" ? "Untagged" : h.feature_tag;
+                  const isConfirming = confirmDeleteTag === h.feature_tag;
                   return (
-                    <tr key={h.feature_tag} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+                    <tr key={h.feature_tag} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors group">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-gray-600 w-4 flex-shrink-0">{i + 1}</span>
@@ -172,6 +183,32 @@ export default function HotspotsPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <LatencyBadge ms={h.avg_latency_ms} />
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {isConfirming ? (
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={() => handleDeleteTag(h.feature_tag)}
+                              className="text-[10px] px-1.5 py-0.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors"
+                            >
+                              Delete
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteTag(null)}
+                              className="text-[10px] px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDeleteTag(h.feature_tag)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-600 hover:text-red-400"
+                            title="Delete all events for this feature tag"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
