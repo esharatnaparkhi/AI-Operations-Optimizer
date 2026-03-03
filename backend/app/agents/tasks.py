@@ -1,17 +1,25 @@
 """
-Celery agent tasks.
+Celery agent tasks — fully powered by LangChain.
 
-Agents run in background workers and produce Suggestions.
+Each Celery task builds a LangChain AgentExecutor backed by OpenAI tool-calling
+and invokes it with a natural-language objective.  All DB operations and the
+prompt-compression LLM call are exposed as @tool functions so the agent can
+decide what to query and when to save a suggestion.
 """
 from __future__ import annotations
 
+import json
 import logging
-from datetime import date, timedelta, timezone, datetime
-from typing import Optional
+from datetime import date, timedelta
 
 from celery import shared_task
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
+
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 
 from ..core.config import get_settings
 from ..models.db import LLMEvent, Project, Suggestion
@@ -19,54 +27,14 @@ from ..models.db import LLMEvent, Project, Suggestion
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Use sync engine for Celery workers
 _sync_engine = None
 
 
 def get_sync_session() -> Session:
     global _sync_engine
     if _sync_engine is None:
-        from sqlalchemy import create_engine as ce
-        _sync_engine = ce(settings.SYNC_DATABASE_URL, pool_pre_ping=True)
+        _sync_engine = create_engine(settings.SYNC_DATABASE_URL, pool_pre_ping=True)
     return Session(_sync_engine)
-
-
-# ── Metrics Aggregation ───────────────────────────────────────
-
-@shared_task(name="app.agents.tasks.trigger_metrics_aggregation")
-def trigger_metrics_aggregation(project_id: str) -> None:
-    """Run heuristic suggestions for a project immediately after each ingest batch."""
-    with get_sync_session() as db:
-        project = db.execute(
-            select(Project).where(Project.id == project_id)
-        ).scalar_one_or_none()
-        if not project:
-            return
-        n = _run_heuristics_for_project(db, project)
-        db.commit()
-        if n:
-            logger.info("Heuristic agent created %d suggestion(s) for project %s", n, project_id)
-
-
-# ── Heuristic Suggestion Agent ────────────────────────────────
-
-@shared_task(name="app.agents.tasks.run_heuristic_agent")
-def run_heuristic_agent() -> dict:
-    """
-    Rule-based suggestion engine.
-    Runs 3 core rules over all projects.
-    """
-    logger.info("Heuristic agent starting")
-    with get_sync_session() as db:
-        projects = db.execute(select(Project)).scalars().all()
-        results = {"projects": len(projects), "suggestions": 0}
-
-        for project in projects:
-            n = _run_heuristics_for_project(db, project)
-            results["suggestions"] += n
-
-        db.commit()
-    return results
 
 
 # ── Mode thresholds ───────────────────────────────────────────
@@ -74,13 +42,13 @@ def run_heuristic_agent() -> dict:
 _MODE_THRESHOLDS = {
     # instant: fire as soon as there's any signal — useful right after setup
     "instant": {
-        "days_window":         1,      # look at last 1 day
-        "min_cost":            0.0001, # fire after just $0.0001 spend
-        "max_avg_out_tokens":  50,     # broader definition of "simple task"
-        "latency_ms":          2000,   # flag anything > 2s
-        "latency_min_calls":   1,      # fire after just 1 slow call
-        "spike_multiplier":    1.5,    # flag if today > 1.5× yesterday
-        "spike_min_cost":      0.001,  # flag if spend > $0.001
+        "days_window":         1,
+        "min_cost":            0.0001,
+        "max_avg_out_tokens":  50,
+        "latency_ms":          2000,
+        "latency_min_calls":   1,
+        "spike_multiplier":    1.5,
+        "spike_min_cost":      0.001,
     },
     # balanced: default — needs a week of data and real spend
     "balanced": {
@@ -105,253 +73,432 @@ _MODE_THRESHOLDS = {
 }
 
 
-def _run_heuristics_for_project(db: Session, project: Project) -> int:
-    """Apply heuristic rules and insert Suggestion rows, respecting the project's suggestion_mode."""
-    mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
-    t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+# ── LangChain Tools ───────────────────────────────────────────
 
-    since = (date.today() - timedelta(days=t["days_window"])).isoformat()
-    suggestions_created = 0
+@tool
+def list_all_projects() -> str:
+    """
+    Return all projects as a JSON list.
+    Each entry has: id, name, suggestion_mode.
+    Call this first to discover which project IDs to analyze.
+    """
+    with get_sync_session() as db:
+        projects = db.execute(select(Project)).scalars().all()
+        return json.dumps([
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "suggestion_mode": getattr(p, "suggestion_mode", "balanced") or "balanced",
+            }
+            for p in projects
+        ])
 
-    # ── Rule 1: Expensive model for simple classification ──────
-    # If a feature_tag's avg output tokens is low, it's likely a
-    # classification/routing task that doesn't need a frontier model.
-    result = db.execute(
-        select(
-            LLMEvent.feature_tag,
-            LLMEvent.model,
-            func.avg(LLMEvent.output_tokens).label("avg_out"),
-            func.sum(LLMEvent.estimated_cost).label("total_cost"),
-            func.count(LLMEvent.id).label("calls"),
-        )
-        .where(
-            LLMEvent.project_id == project.id,
-            func.date(LLMEvent.timestamp) >= since,
-            LLMEvent.model.in_(["gpt-4o", "gpt-4-turbo", "claude-3-opus"]),
-        )
-        .group_by(LLMEvent.feature_tag, LLMEvent.model)
-        .having(func.avg(LLMEvent.output_tokens) < t["max_avg_out_tokens"])
-        .having(func.sum(LLMEvent.estimated_cost) > t["min_cost"])
-    )
-    for row in result.fetchall():
-        existing = db.execute(
-            select(Suggestion).where(
-                Suggestion.project_id == project.id,
-                Suggestion.suggestion_type == "model_downgrade",
-                Suggestion.feature_tag == row.feature_tag,
-                Suggestion.status.in_(["pending", "simulated"]),
-            )
+
+@tool
+def find_expensive_model_features(project_id: str) -> str:
+    """
+    Find feature tags that use expensive frontier models (gpt-4o, gpt-4-turbo,
+    claude-3-opus) on simple tasks with low average output tokens.
+    Thresholds are derived from the project's suggestion_mode.
+
+    Returns a JSON list of findings. Each finding has:
+      feature_tag, model, avg_out_tokens, total_cost, daily_cost,
+      target_model, days_window, suggestion_mode.
+    An empty list means no findings.
+    """
+    cheaper = {
+        "gpt-4o": "gpt-4o-mini",
+        "gpt-4-turbo": "gpt-4o-mini",
+        "claude-3-opus": "claude-3-haiku",
+    }
+    with get_sync_session() as db:
+        project = db.execute(
+            select(Project).where(Project.id == project_id)
         ).scalar_one_or_none()
-        if existing:
-            continue
+        if not project:
+            return json.dumps([])
 
-        cheaper = {"gpt-4o": "gpt-4o-mini", "gpt-4-turbo": "gpt-4o-mini", "claude-3-opus": "claude-3-haiku"}
-        target = cheaper.get(row.model, "gpt-4o-mini")
-        daily_cost = row.total_cost / max(t["days_window"], 1)
-        savings_pct = 75.0
+        mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
+        t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+        since = (date.today() - timedelta(days=t["days_window"])).isoformat()
 
-        db.add(Suggestion(
-            project_id=project.id,
-            suggestion_type="model_downgrade",
-            feature_tag=row.feature_tag,
-            title=f"Downgrade '{row.feature_tag}' from {row.model} → {target}",
-            description=(
-                f"Feature '{row.feature_tag}' averages only {row.avg_out:.0f} output tokens "
-                f"over the last {t['days_window']} day(s), suggesting a simple task that doesn't need {row.model}. "
-                f"Switching to {target} could reduce cost by ~{savings_pct:.0f}% with minimal accuracy impact."
-            ),
-            current_cost_per_day=daily_cost,
-            projected_cost_per_day=daily_cost * (1 - savings_pct / 100),
-            estimated_savings_pct=savings_pct,
-            accuracy_risk="low",
-            confidence=0.85,
-            payload={"current_model": row.model, "target_model": target, "suggestion_mode": mode},
-        ))
-        suggestions_created += 1
-
-    # ── Rule 2: High latency feature ───────────────────────────
-    result2 = db.execute(
-        select(
-            LLMEvent.feature_tag,
-            func.avg(LLMEvent.latency_ms).label("avg_lat"),
-            func.sum(LLMEvent.estimated_cost).label("cost"),
-        )
-        .where(
-            LLMEvent.project_id == project.id,
-            func.date(LLMEvent.timestamp) >= since,
-        )
-        .group_by(LLMEvent.feature_tag)
-        .having(func.avg(LLMEvent.latency_ms) > t["latency_ms"])
-        .having(func.count(LLMEvent.id) >= t["latency_min_calls"])
-    )
-    for row in result2.fetchall():
-        existing = db.execute(
-            select(Suggestion).where(
-                Suggestion.project_id == project.id,
-                Suggestion.suggestion_type == "latency_optimization",
-                Suggestion.feature_tag == row.feature_tag,
-                Suggestion.status.in_(["pending", "simulated"]),
+        rows = db.execute(
+            select(
+                LLMEvent.feature_tag,
+                LLMEvent.model,
+                func.avg(LLMEvent.output_tokens).label("avg_out"),
+                func.sum(LLMEvent.estimated_cost).label("total_cost"),
             )
+            .where(
+                LLMEvent.project_id == project_id,
+                func.date(LLMEvent.timestamp) >= since,
+                LLMEvent.model.in_(list(cheaper.keys())),
+            )
+            .group_by(LLMEvent.feature_tag, LLMEvent.model)
+            .having(func.avg(LLMEvent.output_tokens) < t["max_avg_out_tokens"])
+            .having(func.sum(LLMEvent.estimated_cost) > t["min_cost"])
+        ).fetchall()
+
+        return json.dumps([
+            {
+                "feature_tag": row.feature_tag,
+                "model": row.model,
+                "avg_out_tokens": round(float(row.avg_out), 1),
+                "total_cost": round(float(row.total_cost), 6),
+                "daily_cost": round(float(row.total_cost) / max(t["days_window"], 1), 6),
+                "target_model": cheaper.get(row.model, "gpt-4o-mini"),
+                "days_window": t["days_window"],
+                "suggestion_mode": mode,
+            }
+            for row in rows
+        ])
+
+
+@tool
+def find_high_latency_features(project_id: str) -> str:
+    """
+    Find feature tags with high average latency.
+    Thresholds are derived from the project's suggestion_mode.
+
+    Returns a JSON list of findings. Each finding has:
+      feature_tag, avg_latency_ms, daily_cost, days_window, suggestion_mode.
+    An empty list means no findings.
+    """
+    with get_sync_session() as db:
+        project = db.execute(
+            select(Project).where(Project.id == project_id)
         ).scalar_one_or_none()
-        if existing:
-            continue
+        if not project:
+            return json.dumps([])
 
-        daily_cost = row.cost / max(t["days_window"], 1)
-        db.add(Suggestion(
-            project_id=project.id,
-            suggestion_type="latency_optimization",
-            feature_tag=row.feature_tag,
-            title=f"High latency on '{row.feature_tag}' ({row.avg_lat:.0f}ms avg)",
-            description=(
-                f"'{row.feature_tag}' averages {row.avg_lat / 1000:.1f}s over the last {t['days_window']} day(s) — "
-                "consider prompt caching, streaming, or switching to a faster/smaller model."
-            ),
-            current_cost_per_day=daily_cost,
-            projected_cost_per_day=daily_cost * 0.9,
-            estimated_savings_pct=10.0,
-            accuracy_risk="low",
-            confidence=0.70,
-            payload={"avg_latency_ms": row.avg_lat, "suggestion_mode": mode},
-        ))
-        suggestions_created += 1
+        mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
+        t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+        since = (date.today() - timedelta(days=t["days_window"])).isoformat()
 
-    # ── Rule 3: Cost spike vs trailing average ─────────────────
-    today_str = date.today().isoformat()
-    r_today = db.execute(
-        select(func.sum(LLMEvent.estimated_cost))
-        .where(
-            LLMEvent.project_id == project.id,
-            func.date(LLMEvent.timestamp) == today_str,
+        rows = db.execute(
+            select(
+                LLMEvent.feature_tag,
+                func.avg(LLMEvent.latency_ms).label("avg_lat"),
+                func.sum(LLMEvent.estimated_cost).label("cost"),
+            )
+            .where(
+                LLMEvent.project_id == project_id,
+                func.date(LLMEvent.timestamp) >= since,
+            )
+            .group_by(LLMEvent.feature_tag)
+            .having(func.avg(LLMEvent.latency_ms) > t["latency_ms"])
+            .having(func.count(LLMEvent.id) >= t["latency_min_calls"])
+        ).fetchall()
+
+        return json.dumps([
+            {
+                "feature_tag": row.feature_tag,
+                "avg_latency_ms": round(float(row.avg_lat), 1),
+                "daily_cost": round(float(row.cost) / max(t["days_window"], 1), 6),
+                "days_window": t["days_window"],
+                "suggestion_mode": mode,
+            }
+            for row in rows
+        ])
+
+
+@tool
+def detect_cost_spike(project_id: str) -> str:
+    """
+    Check whether today's LLM spend for a project is anomalously high
+    compared to the trailing daily average.
+    Thresholds are derived from the project's suggestion_mode.
+
+    Returns JSON with keys:
+      spike (bool), today_cost, trailing_avg, multiplier, days_window, suggestion_mode.
+    """
+    with get_sync_session() as db:
+        project = db.execute(
+            select(Project).where(Project.id == project_id)
+        ).scalar_one_or_none()
+        if not project:
+            return json.dumps({"spike": False})
+
+        mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
+        t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+        today_str = date.today().isoformat()
+        since = (date.today() - timedelta(days=t["days_window"])).isoformat()
+
+        today_cost = db.execute(
+            select(func.sum(LLMEvent.estimated_cost)).where(
+                LLMEvent.project_id == project_id,
+                func.date(LLMEvent.timestamp) == today_str,
+            )
+        ).scalar() or 0.0
+
+        trailing_avg = db.execute(
+            select(func.avg(LLMEvent.estimated_cost)).where(
+                LLMEvent.project_id == project_id,
+                func.date(LLMEvent.timestamp) >= since,
+                func.date(LLMEvent.timestamp) < today_str,
+            )
+        ).scalar() or 0.0
+
+        is_spike = (
+            today_cost > trailing_avg * t["spike_multiplier"]
+            and today_cost > t["spike_min_cost"]
         )
-    ).scalar() or 0.0
+        return json.dumps({
+            "spike": is_spike,
+            "today_cost": round(float(today_cost), 6),
+            "trailing_avg": round(float(trailing_avg), 6),
+            "multiplier": round(float(today_cost) / max(float(trailing_avg), 0.0001), 2),
+            "days_window": t["days_window"],
+            "suggestion_mode": mode,
+        })
 
-    r_avg = db.execute(
-        select(func.avg(LLMEvent.estimated_cost))
-        .where(
-            LLMEvent.project_id == project.id,
-            func.date(LLMEvent.timestamp) >= since,
-            func.date(LLMEvent.timestamp) < today_str,
+
+@tool
+def pending_suggestion_exists(
+    project_id: str,
+    suggestion_type: str,
+    feature_tag: str = "",
+) -> str:
+    """
+    Check whether a pending or simulated suggestion already exists to avoid duplicates.
+    For anomaly_alert, pass feature_tag as an empty string — today's date is also checked.
+    Returns the string 'true' or 'false'.
+    """
+    with get_sync_session() as db:
+        q = select(Suggestion).where(
+            Suggestion.project_id == project_id,
+            Suggestion.suggestion_type == suggestion_type,
         )
-    ).scalar() or 0.0
-
-    if r_today > r_avg * t["spike_multiplier"] and r_today > t["spike_min_cost"]:
-        existing = db.execute(
-            select(Suggestion).where(
-                Suggestion.project_id == project.id,
-                Suggestion.suggestion_type == "anomaly_alert",
+        if suggestion_type == "anomaly_alert":
+            today_str = date.today().isoformat()
+            q = q.where(
                 Suggestion.status == "pending",
                 func.date(Suggestion.created_at) == today_str,
             )
-        ).scalar_one_or_none()
-        if not existing:
-            db.add(Suggestion(
-                project_id=project.id,
-                suggestion_type="anomaly_alert",
-                title=f"Cost spike detected today (${r_today:.4f} vs ${r_avg:.4f} trailing avg)",
-                description=(
-                    f"Today's cost is {r_today / max(r_avg, 0.0001):.1f}× the trailing average "
-                    f"over the last {t['days_window']} day(s). "
-                    "Check for runaway loops, traffic spikes, or misconfigured prompts."
-                ),
-                current_cost_per_day=r_today,
-                projected_cost_per_day=r_today,
-                estimated_savings_pct=0.0,
-                accuracy_risk="medium",
-                confidence=0.90,
-                payload={"today": r_today, "trailing_avg": r_avg, "suggestion_mode": mode},
-            ))
-            suggestions_created += 1
-
-    return suggestions_created
+        else:
+            q = q.where(
+                Suggestion.feature_tag == feature_tag,
+                Suggestion.status.in_(["pending", "simulated"]),
+            )
+        existing = db.execute(q).scalar_one_or_none()
+        return "true" if existing else "false"
 
 
-# ── Anomaly Agent ─────────────────────────────────────────────
+@tool
+def save_suggestion(
+    project_id: str,
+    suggestion_type: str,
+    title: str,
+    description: str,
+    accuracy_risk: str,
+    confidence: float,
+    estimated_savings_pct: float,
+    current_cost_per_day: float,
+    projected_cost_per_day: float,
+    payload_json: str,
+    feature_tag: str = "",
+) -> str:
+    """
+    Persist a new Suggestion row to the database.
+
+    Args:
+        suggestion_type: one of model_downgrade, latency_optimization,
+                         anomaly_alert, prompt_compress.
+        accuracy_risk:   low, medium, or high.
+        confidence:      float 0-1.
+        payload_json:    a valid JSON string with supporting evidence.
+        feature_tag:     leave empty for project-level suggestions (e.g. anomaly_alert).
+        current_cost_per_day / projected_cost_per_day: pass 0.0 when not applicable.
+
+    Returns 'saved' on success.
+    """
+    with get_sync_session() as db:
+        db.add(Suggestion(
+            project_id=project_id,
+            suggestion_type=suggestion_type,
+            feature_tag=feature_tag or None,
+            title=title,
+            description=description,
+            current_cost_per_day=current_cost_per_day or None,
+            projected_cost_per_day=projected_cost_per_day or None,
+            estimated_savings_pct=estimated_savings_pct,
+            accuracy_risk=accuracy_risk,
+            confidence=confidence,
+            payload=json.loads(payload_json),
+        ))
+        db.commit()
+    return "saved"
+
+
+@tool
+def compress_prompt_text(prompt: str) -> str:
+    """
+    Compress a prompt using a cheap LLM to reduce token usage.
+    Returns JSON with keys:
+      original_tokens, compressed_tokens, savings_pct, compressed_prompt.
+    Returns {error: ...} if OPENAI_API_KEY is not configured.
+    """
+    if not settings.OPENAI_API_KEY:
+        return json.dumps({"error": "OPENAI_API_KEY not set"})
+
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    llm = ChatOpenAI(
+        model=settings.COMPRESSION_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+        max_tokens=2048,
+    )
+
+    original_tokens = llm.get_num_tokens(prompt)
+    response = llm.invoke([
+        SystemMessage(content=(
+            "You are a prompt compression expert. Rewrite the following prompt "
+            "to be as concise as possible while preserving all instructions and context. "
+            "Output ONLY the compressed prompt, nothing else."
+        )),
+        HumanMessage(content=prompt),
+    ])
+    compressed = response.content or ""
+    compressed_tokens = llm.get_num_tokens(compressed)
+    savings_pct = ((original_tokens - compressed_tokens) / max(original_tokens, 1)) * 100
+
+    return json.dumps({
+        "original_tokens": original_tokens,
+        "compressed_tokens": compressed_tokens,
+        "savings_pct": round(savings_pct, 1),
+        "compressed_prompt": compressed[:2000],
+    })
+
+
+# ── Agent factory ─────────────────────────────────────────────
+
+_AGENT_TOOLS = [
+    list_all_projects,
+    find_expensive_model_features,
+    find_high_latency_features,
+    detect_cost_spike,
+    pending_suggestion_exists,
+    save_suggestion,
+    compress_prompt_text,
+]
+
+_SYSTEM_PROMPT = """You are an LLM cost-optimization agent for a usage-monitoring platform.
+You have tools to query usage data and save suggestions into the database.
+
+Rules you MUST follow:
+1. Always call pending_suggestion_exists before calling save_suggestion to avoid duplicates.
+   If it returns 'true', skip that suggestion.
+2. model_downgrade suggestions:
+     accuracy_risk='low', confidence=0.85, estimated_savings_pct=75.0
+     projected_cost_per_day = current_cost_per_day * 0.25
+     payload_json must include current_model, target_model, suggestion_mode.
+3. latency_optimization suggestions:
+     accuracy_risk='low', confidence=0.70, estimated_savings_pct=10.0
+     projected_cost_per_day = current_cost_per_day * 0.9
+     payload_json must include avg_latency_ms, suggestion_mode.
+4. anomaly_alert suggestions:
+     accuracy_risk='medium', confidence=0.90, estimated_savings_pct=0.0
+     current_cost_per_day = projected_cost_per_day = today's cost
+     feature_tag must be empty string.
+     payload_json must include today, trailing_avg, suggestion_mode.
+5. prompt_compress suggestions:
+     Only save if savings_pct > 10.
+     accuracy_risk='medium', confidence=0.65
+     current_cost_per_day=0.0, projected_cost_per_day=0.0
+     payload_json must include original_tokens, compressed_tokens, compressed_prompt.
+6. payload_json must always be a valid JSON string (use double quotes).
+7. Complete all requested work before stopping."""
+
+
+def _build_agent() -> AgentExecutor:
+    llm = ChatOpenAI(
+        model=settings.COMPRESSION_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+        temperature=0,
+    )
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", _SYSTEM_PROMPT),
+        ("human", "{input}"),
+        MessagesPlaceholder("agent_scratchpad"),
+    ])
+    agent = create_tool_calling_agent(llm, _AGENT_TOOLS, prompt)
+    return AgentExecutor(agent=agent, tools=_AGENT_TOOLS, verbose=False)
+
+
+# ── Celery Tasks ──────────────────────────────────────────────
+
+def _invoke_agent(input_text: str) -> dict:
+    """Build and invoke the agent, returning a result dict. Handles auth and runtime errors."""
+    try:
+        result = _build_agent().invoke({"input": input_text})
+        return {"status": "ok", "output": result.get("output", "")}
+    except Exception as exc:
+        # Surface invalid-key errors with a clear message so they're easy to spot in logs
+        err_str = str(exc)
+        if "401" in err_str or "invalid_api_key" in err_str or "Incorrect API key" in err_str:
+            logger.error("Agent failed: invalid OPENAI_API_KEY — update it in .env: %s", exc)
+            return {"status": "error", "message": "invalid_api_key"}
+        logger.exception("Agent invocation failed: %s", exc)
+        return {"status": "error", "message": err_str}
+
+
+@shared_task(name="app.agents.tasks.trigger_metrics_aggregation")
+def trigger_metrics_aggregation(project_id: str) -> None:
+    """Run the LangChain agent for a single project after each ingest batch."""
+    if not settings.OPENAI_API_KEY:
+        logger.warning("trigger_metrics_aggregation: OPENAI_API_KEY not set, skipping")
+        return
+    logger.info("LangChain agent running for project %s", project_id)
+    _invoke_agent(
+        f"Analyze project {project_id}. Check for: "
+        "(1) expensive frontier models used on simple tasks → model_downgrade suggestion, "
+        "(2) high latency features → latency_optimization suggestion, "
+        "(3) cost spike today → anomaly_alert suggestion. "
+        "For each finding, check for a duplicate before saving."
+    )
+
+
+@shared_task(name="app.agents.tasks.run_heuristic_agent")
+def run_heuristic_agent() -> dict:
+    """LangChain agent that runs cost-optimization heuristics over all projects."""
+    if not settings.OPENAI_API_KEY:
+        logger.warning("run_heuristic_agent: OPENAI_API_KEY not set, skipping")
+        return {"status": "skipped"}
+    logger.info("Heuristic agent starting")
+    return _invoke_agent(
+        "List all projects. For each project run the three checks: "
+        "(1) expensive frontier models on simple tasks → model_downgrade, "
+        "(2) high average latency → latency_optimization, "
+        "(3) cost spike today → anomaly_alert. "
+        "Skip any finding that already has a pending suggestion. "
+        "Return a brief summary of suggestions created per project."
+    )
+
 
 @shared_task(name="app.agents.tasks.run_anomaly_agent")
 def run_anomaly_agent() -> dict:
-    """Lightweight anomaly check that runs every 5 minutes."""
+    """LangChain agent that checks for cost spikes across all projects."""
+    if not settings.OPENAI_API_KEY:
+        logger.warning("run_anomaly_agent: OPENAI_API_KEY not set, skipping")
+        return {"status": "skipped"}
     logger.info("Anomaly agent: checking recent spikes")
-    # In a real system this would query last-5-min window vs rolling baseline
-    # For MVP: delegate to heuristic agent
-    return {"status": "ok"}
+    return _invoke_agent(
+        "List all projects and check each for a cost spike today. "
+        "For any spike found, verify no anomaly_alert already exists for today, "
+        "then save an anomaly_alert suggestion."
+    )
 
-
-# ── Prompt Compression Agent ──────────────────────────────────
 
 @shared_task(name="app.agents.tasks.run_compression_agent")
 def run_compression_agent(project_id: str, feature_tag: str, sample_prompt: str) -> dict:
-    """
-    Use a cheap LLM to compress a sample prompt and estimate savings.
-    Requires OPENAI_API_KEY to be set.
-    """
+    """LangChain agent that compresses a sample prompt and saves a suggestion if savings > 10%."""
     if not settings.OPENAI_API_KEY:
         logger.warning("Compression agent: OPENAI_API_KEY not set, skipping")
         return {"status": "skipped"}
-
-    try:
-        import openai
-        import tiktoken
-
-        enc = tiktoken.get_encoding("cl100k_base")
-        original_tokens = len(enc.encode(sample_prompt))
-
-        oai = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-        response = oai.chat.completions.create(
-            model=settings.COMPRESSION_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a prompt compression expert. Rewrite the following prompt "
-                        "to be as concise as possible while preserving all instructions and context. "
-                        "Output ONLY the compressed prompt, nothing else."
-                    ),
-                },
-                {"role": "user", "content": sample_prompt},
-            ],
-            max_tokens=2048,
-        )
-
-        compressed = response.choices[0].message.content or ""
-        compressed_tokens = len(enc.encode(compressed))
-        savings_pct = ((original_tokens - compressed_tokens) / max(original_tokens, 1)) * 100
-
-        if savings_pct > 10:
-            with get_sync_session() as db:
-                daily_token_estimate = original_tokens * 100  # assume 100 calls/day
-                token_savings = daily_token_estimate * (savings_pct / 100)
-                cost_savings = (token_savings / 1_000_000) * 1.0  # ~$1/1M tokens
-
-                sug = Suggestion(
-                    project_id=project_id,
-                    suggestion_type="prompt_compress",
-                    feature_tag=feature_tag,
-                    title=f"Compress prompt for '{feature_tag}' (save {savings_pct:.0f}% tokens)",
-                    description=(
-                        f"Sample prompt compressed from {original_tokens} → {compressed_tokens} tokens "
-                        f"({savings_pct:.0f}% reduction). Review the compressed version before applying."
-                    ),
-                    estimated_savings_pct=savings_pct,
-                    current_cost_per_day=None,
-                    projected_cost_per_day=None,
-                    accuracy_risk="medium",
-                    confidence=0.65,
-                    payload={
-                        "original_tokens": original_tokens,
-                        "compressed_tokens": compressed_tokens,
-                        "compressed_prompt": compressed[:2000],  # truncate for storage
-                    },
-                )
-                db.add(sug)
-                db.commit()
-
-        return {
-            "status": "ok",
-            "original_tokens": original_tokens,
-            "compressed_tokens": compressed_tokens,
-            "savings_pct": round(savings_pct, 1),
-        }
-
-    except Exception as exc:
-        logger.exception("Compression agent failed: %s", exc)
-        return {"status": "error", "message": str(exc)}
+    logger.info("Compression agent running for project %s / %s", project_id, feature_tag)
+    return _invoke_agent(
+        f"Compress the following prompt for project {project_id}, "
+        f"feature tag '{feature_tag}':\n\n{sample_prompt}\n\n"
+        "If savings_pct > 10, check that no pending prompt_compress suggestion exists "
+        "for this feature, then save a prompt_compress suggestion."
+    )

@@ -28,7 +28,9 @@ pydantic-settings==2.2.1
 
 # LLM (compression agent)
 openai==1.30.1
-tiktoken==0.7.0
+langchain>=0.2.0
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
 
 # Notifications
 slack-sdk==3.27.2
