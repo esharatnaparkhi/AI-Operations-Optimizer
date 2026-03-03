@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.config import get_settings
 from .core.database import engine, Base
+from .celery_app import celery_app  # noqa: F401 — must be imported before tasks so @shared_task binds to the configured Redis broker
 from .api import auth, projects, ingest, metrics, suggestions
 
 settings = get_settings()

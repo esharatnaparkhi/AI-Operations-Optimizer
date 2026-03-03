@@ -1,7 +1,32 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Lightbulb, Play, CheckCircle, X, AlertTriangle, TrendingDown, Code, ArrowRight, Info } from "lucide-react";
-import { api, Suggestion, SimulateResult, ApplyResult } from "@/lib/api";
+import { api, Project, Suggestion, SimulateResult, ApplyResult } from "@/lib/api";
+
+function getModeHint(mode: string | undefined): { banner: string; emptyTitle: string; emptyDetail: string } {
+  const m = mode || "instant";
+  if (m === "instant") {
+    return {
+      banner: "Suggestions fire immediately after each SDK event.",
+      emptyTitle: "No suggestions yet",
+      emptyDetail: "Send some SDK events — suggestions will appear right away.",
+    };
+  }
+  if (/^\d+h$/.test(m)) {
+    const n = m.replace("h", "");
+    const label = m === "24h" ? "24 hours" : `${n} hours`;
+    return {
+      banner: `Suggestions are generated every ${label}.`,
+      emptyTitle: "No suggestions yet",
+      emptyDetail: `The agent runs every ${label}. Send some SDK data and check back after the next run.`,
+    };
+  }
+  return {
+    banner: "Suggestions are generated periodically by the heuristic agent.",
+    emptyTitle: "No suggestions yet",
+    emptyDetail: "Send some SDK data and the agent will surface optimisation opportunities.",
+  };
+}
 
 const TYPE_LABELS: Record<string, string> = {
   model_downgrade: "Cheaper model",
@@ -263,6 +288,7 @@ function SnippetModal({ result, onClose }: { result: ApplyResult; onClose: () =>
 }
 
 export default function SuggestionsPage() {
+  const [project, setProject] = useState<Project | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [simResult, setSimResult] = useState<SimulateResult | null>(null);
@@ -273,8 +299,14 @@ export default function SuggestionsPage() {
   useEffect(() => {
     const projectId = localStorage.getItem("active_project");
     if (!projectId) return;
+    api.projects.list().then((ps) => {
+      const p = ps.find((p) => p.id === projectId);
+      if (p) setProject(p);
+    });
     api.suggestions.list(projectId).then(setSuggestions).finally(() => setLoading(false));
   }, []);
+
+  const modeHint = getModeHint(project?.suggestion_mode);
 
   async function handleSimulate(id: string) {
     setSimulatingId(id);
@@ -340,7 +372,7 @@ export default function SuggestionsPage() {
             <span className="text-gray-200 font-medium">How to use: </span>
             Click <span className="text-gray-200 font-medium">Preview savings</span> to see a cost projection,
             then <span className="text-gray-200 font-medium">Apply & get code</span> to receive a drop-in code snippet.
-            Suggestions are generated hourly by the heuristic agent.
+            {modeHint.banner}
           </p>
         </div>
       )}
@@ -354,9 +386,9 @@ export default function SuggestionsPage() {
           <div className="w-12 h-12 bg-gray-900 border border-gray-800 rounded-xl flex items-center justify-center mx-auto">
             <Lightbulb size={22} className="text-gray-700" />
           </div>
-          <p className="text-gray-400 font-medium">No suggestions yet</p>
+          <p className="text-gray-400 font-medium">{modeHint.emptyTitle}</p>
           <p className="text-xs text-gray-600 max-w-xs mx-auto leading-relaxed">
-            The heuristic agent runs once an hour. Make sure you have several days of SDK data first — it needs enough history to spot patterns.
+            {modeHint.emptyDetail}
           </p>
         </div>
       ) : (

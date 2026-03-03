@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from celery import shared_task
 from sqlalchemy import create_engine, func, select
@@ -37,40 +37,65 @@ def get_sync_session() -> Session:
     return Session(_sync_engine)
 
 
-# ── Mode thresholds ───────────────────────────────────────────
+# ── Mode helpers ──────────────────────────────────────────────
 
-_MODE_THRESHOLDS = {
-    # instant: fire as soon as there's any signal — useful right after setup
-    "instant": {
-        "days_window":         1,
-        "min_cost":            0.0001,
-        "max_avg_out_tokens":  50,
-        "latency_ms":          2000,
-        "latency_min_calls":   1,
-        "spike_multiplier":    1.5,
-        "spike_min_cost":      0.001,
-    },
-    # balanced: default — needs a week of data and real spend
-    "balanced": {
-        "days_window":         7,
-        "min_cost":            0.01,
-        "max_avg_out_tokens":  25,
-        "latency_ms":          5000,
-        "latency_min_calls":   10,
-        "spike_multiplier":    3.0,
-        "spike_min_cost":      0.05,
-    },
-    # conservative: only surface high-confidence suggestions with lots of data
-    "conservative": {
-        "days_window":         30,
-        "min_cost":            0.10,
-        "max_avg_out_tokens":  15,
-        "latency_ms":          8000,
-        "latency_min_calls":   50,
-        "spike_multiplier":    5.0,
-        "spike_min_cost":      0.20,
-    },
-}
+def _parse_interval_hours(mode: str) -> int:
+    """Return interval in hours: 0 for 'instant', N for 'Nh', 24 for legacy/unknown."""
+    if mode == "instant":
+        return 0
+    if mode.endswith("h") and mode[:-1].isdigit():
+        return int(mode[:-1])
+    return 24  # fallback for legacy "balanced" / "conservative"
+
+
+def _get_thresholds(mode: str) -> dict:
+    """
+    Compute analysis thresholds from the suggestion mode.
+    Instant mode uses a 1-day window with very low thresholds.
+    Interval modes (e.g. '6h', '24h') scale the window with the interval.
+    """
+    hours = _parse_interval_hours(mode)
+    days = max(1, hours // 24) if hours else 1
+    if hours == 0:  # instant
+        return {
+            "days_window":        1,
+            "min_cost":           0.0001,
+            "max_avg_out_tokens": 50,
+            "latency_ms":         2000,
+            "latency_min_calls":  1,
+            "spike_multiplier":   1.5,
+            "spike_min_cost":     0.001,
+        }
+    return {
+        "days_window":        days,
+        "min_cost":           max(0.001, 0.001 * days),
+        "max_avg_out_tokens": 35,
+        "latency_ms":         3000,
+        "latency_min_calls":  max(1, hours // 6),
+        "spike_multiplier":   2.5,
+        "spike_min_cost":     max(0.005, 0.005 * days),
+    }
+
+
+def _should_run(project_id: str, mode: str) -> bool:
+    """
+    For 'instant' mode always returns True.
+    For interval modes ('Nh') returns True only if enough time has elapsed
+    since the last suggestion was created for this project.
+    """
+    hours = _parse_interval_hours(mode)
+    if hours == 0:
+        return True
+    with get_sync_session() as db:
+        last_created = db.execute(
+            select(func.max(Suggestion.created_at)).where(
+                Suggestion.project_id == project_id
+            )
+        ).scalar()
+    if last_created is None:
+        return True
+    elapsed = (datetime.now(timezone.utc) - last_created).total_seconds() / 3600
+    return elapsed >= hours
 
 
 # ── LangChain Tools ───────────────────────────────────────────
@@ -118,8 +143,8 @@ def find_expensive_model_features(project_id: str) -> str:
         if not project:
             return json.dumps([])
 
-        mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
-        t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+        mode = getattr(project, "suggestion_mode", "instant") or "instant"
+        t = _get_thresholds(mode)
         since = (date.today() - timedelta(days=t["days_window"])).isoformat()
 
         rows = db.execute(
@@ -171,8 +196,8 @@ def find_high_latency_features(project_id: str) -> str:
         if not project:
             return json.dumps([])
 
-        mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
-        t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+        mode = getattr(project, "suggestion_mode", "instant") or "instant"
+        t = _get_thresholds(mode)
         since = (date.today() - timedelta(days=t["days_window"])).isoformat()
 
         rows = db.execute(
@@ -219,8 +244,8 @@ def detect_cost_spike(project_id: str) -> str:
         if not project:
             return json.dumps({"spike": False})
 
-        mode = getattr(project, "suggestion_mode", "balanced") or "balanced"
-        t = _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["balanced"])
+        mode = getattr(project, "suggestion_mode", "instant") or "instant"
+        t = _get_thresholds(mode)
         today_str = date.today().isoformat()
         since = (date.today() - timedelta(days=t["days_window"])).isoformat()
 
@@ -444,11 +469,26 @@ def _invoke_agent(input_text: str) -> dict:
 
 @shared_task(name="app.agents.tasks.trigger_metrics_aggregation")
 def trigger_metrics_aggregation(project_id: str) -> None:
-    """Run the LangChain agent for a single project after each ingest batch."""
+    """Run the LangChain agent for a single project after each ingest batch.
+
+    Fires immediately for 'instant' mode projects.
+    For interval modes ('Nh') it skips if not enough time has elapsed since
+    the last suggestion was created.
+    """
     if not settings.OPENAI_API_KEY:
         logger.warning("trigger_metrics_aggregation: OPENAI_API_KEY not set, skipping")
         return
-    logger.info("LangChain agent running for project %s", project_id)
+    with get_sync_session() as db:
+        project = db.execute(
+            select(Project).where(Project.id == project_id)
+        ).scalar_one_or_none()
+        if not project:
+            return
+        mode = project.suggestion_mode or "instant"
+    if not _should_run(project_id, mode):
+        logger.debug("Skipping project %s — within cooldown for mode '%s'", project_id, mode)
+        return
+    logger.info("LangChain agent running for project %s (mode: %s)", project_id, mode)
     _invoke_agent(
         f"Analyze project {project_id}. Check for: "
         "(1) expensive frontier models used on simple tasks → model_downgrade suggestion, "
@@ -460,13 +500,29 @@ def trigger_metrics_aggregation(project_id: str) -> None:
 
 @shared_task(name="app.agents.tasks.run_heuristic_agent")
 def run_heuristic_agent() -> dict:
-    """LangChain agent that runs cost-optimization heuristics over all projects."""
+    """Periodic sweep: run the LangChain agent for every interval-mode project that is due.
+
+    'instant' projects are handled exclusively by the ingest trigger and are skipped here.
+    """
     if not settings.OPENAI_API_KEY:
         logger.warning("run_heuristic_agent: OPENAI_API_KEY not set, skipping")
         return {"status": "skipped"}
-    logger.info("Heuristic agent starting")
+
+    with get_sync_session() as db:
+        projects = db.execute(select(Project)).scalars().all()
+        due = [
+            str(p.id) for p in projects
+            if (p.suggestion_mode or "instant") != "instant"
+            and _should_run(str(p.id), p.suggestion_mode or "24h")
+        ]
+
+    if not due:
+        logger.info("Heuristic sweep: no interval-mode projects due")
+        return {"status": "ok", "output": "no projects due"}
+
+    logger.info("Heuristic sweep: %d project(s) due — %s", len(due), due)
     return _invoke_agent(
-        "List all projects. For each project run the three checks: "
+        f"Analyze these projects: {', '.join(due)}. For each one run the three checks: "
         "(1) expensive frontier models on simple tasks → model_downgrade, "
         "(2) high average latency → latency_optimization, "
         "(3) cost spike today → anomaly_alert. "

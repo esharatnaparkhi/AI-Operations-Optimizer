@@ -45,14 +45,15 @@ class ProjectResponse(BaseModel):
     name: str
     api_key: str
     created_at: datetime
-    suggestion_mode: str = "balanced"
+    suggestion_mode: str = "instant"
 
     class Config:
         from_attributes = True
 
 
 class ProjectUpdateMode(BaseModel):
-    suggestion_mode: str = Field(pattern="^(instant|balanced|conservative)$")
+    # "instant" fires after every ingest; "Nh" (e.g. "6h", "24h", "48h") fires on a cooldown
+    suggestion_mode: str = Field(pattern=r"^(instant|\d{1,3}h)$")
 
 
 # ── Ingest ────────────────────────────────────────────────────

@@ -73,6 +73,6 @@ async def ingest_events(
         try:
             trigger_metrics_aggregation.delay(str(project.id))
         except Exception as exc:
-            logger.debug("Could not enqueue aggregation task (Celery may not be running): %s", exc)
+            logger.warning("Could not enqueue aggregation task: %s", exc)
 
     return IngestResponse(received=len(body.events), queued=queued)

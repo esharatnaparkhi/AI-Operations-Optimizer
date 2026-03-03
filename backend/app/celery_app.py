@@ -21,11 +21,12 @@ celery_app.conf.update(
         "app.agents.tasks.*": {"queue": "agents"},
     },
     beat_schedule={
-        # Heuristics now run per-project on every ingest via trigger_metrics_aggregation.
-        # Keep a daily sweep to catch any projects with stale/missed data.
-        "run-heuristics-daily-sweep": {
+        # Sweep every hour so interval-mode projects (e.g. "6h", "24h") are checked
+        # promptly. Each project's own cooldown gate (_should_run) prevents over-firing.
+        # "instant" projects are handled exclusively by the per-ingest trigger.
+        "run-heuristics-hourly-sweep": {
             "task": "app.agents.tasks.run_heuristic_agent",
-            "schedule": 86400.0,
+            "schedule": 3600.0,
         },
     },
 )

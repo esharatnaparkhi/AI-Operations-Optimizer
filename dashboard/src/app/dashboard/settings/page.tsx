@@ -1,36 +1,26 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Copy, Check, Key, Terminal, Code, Package, Zap, BarChart2, Shield } from "lucide-react";
+import { Copy, Check, Key, Terminal, Code, Package, Zap, Clock } from "lucide-react";
 import { api, Project } from "@/lib/api";
 
-type Mode = "instant" | "balanced" | "conservative";
-
-const MODES: { value: Mode; label: string; icon: React.ElementType; description: string; detail: string; color: string }[] = [
+const FIXED_MODES = [
   {
     value: "instant",
     label: "Instant",
     icon: Zap,
-    description: "Suggestions after every call",
-    detail: "Looks at the last 1 day. Fires on just 1 call with any spend. Best for testing or small projects that want immediate feedback.",
+    description: "After every ingest batch",
+    detail: "Suggestions fire immediately after each SDK event. Best for testing and active development.",
     color: "text-yellow-400 border-yellow-400/40 bg-yellow-400/5",
   },
   {
-    value: "balanced",
-    label: "Balanced",
-    icon: BarChart2,
-    description: "Suggestions after ~7 days of data",
-    detail: "Looks at the last 7 days. Requires moderate cost ($0.01+) and 10+ slow calls. Reduces noise for production projects. Default.",
+    value: "24h",
+    label: "Every 24h",
+    icon: Clock,
+    description: "Once per day",
+    detail: "Suggestions run every 24 hours. Good balance between responsiveness and noise for production projects.",
     color: "text-brand-400 border-brand-400/40 bg-brand-400/5",
   },
-  {
-    value: "conservative",
-    label: "Conservative",
-    icon: Shield,
-    description: "High-confidence only, 30-day window",
-    detail: "Looks at the last 30 days. Only surfaces suggestions with significant, sustained spend. Best for large, mature projects.",
-    color: "text-green-400 border-green-400/40 bg-green-400/5",
-  },
-];
+] as const;
 
 function CodeBlock({ code, language = "bash" }: { code: string; language?: string }) {
   const [copied, setCopied] = useState(false);
@@ -84,6 +74,7 @@ export default function SettingsPage() {
   const [keyCopied, setKeyCopied] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
   const [modeSaved, setModeSaved] = useState(false);
+  const [customHours, setCustomHours] = useState("");
 
   useEffect(() => {
     const projectId = localStorage.getItem("active_project");
@@ -102,7 +93,7 @@ export default function SettingsPage() {
     setTimeout(() => setKeyCopied(false), 2000);
   }
 
-  async function handleModeChange(mode: Mode) {
+  async function handleModeChange(mode: string) {
     if (!project || mode === project.suggestion_mode) return;
     setSavingMode(true);
     try {
@@ -113,6 +104,12 @@ export default function SettingsPage() {
     } finally {
       setSavingMode(false);
     }
+  }
+
+  async function handleCustomApply() {
+    const h = parseInt(customHours, 10);
+    if (!h || h < 1 || h > 999) return;
+    await handleModeChange(`${h}h`);
   }
 
   const installCode = `pip install llm-monitor-sdk`;
@@ -160,13 +157,13 @@ monitor.track(
         <p className="text-sm text-gray-400">Connect the SDK to start tracking your LLM costs and latency</p>
       </div>
 
-      {/* Suggestion Mode */}
+      {/* Suggestion Frequency */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-white">Suggestion Sensitivity</h2>
+            <h2 className="text-sm font-semibold text-white">Suggestion Frequency</h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Controls how much data the heuristic agent needs before surfacing a suggestion
+              Controls when the agent runs and surfaces suggestions for this project
             </p>
           </div>
           {modeSaved && (
@@ -176,9 +173,10 @@ monitor.track(
           )}
         </div>
 
+        {/* Fixed options */}
         <div className="grid grid-cols-1 gap-3">
-          {MODES.map((m) => {
-            const active = (project.suggestion_mode || "balanced") === m.value;
+          {FIXED_MODES.map((m) => {
+            const active = (project.suggestion_mode || "instant") === m.value;
             const Icon = m.icon;
             return (
               <button
@@ -212,6 +210,60 @@ monitor.track(
             );
           })}
         </div>
+
+        {/* Custom interval */}
+        {(() => {
+          const currentMode = project.suggestion_mode || "instant";
+          const isCustomActive =
+            currentMode !== "instant" &&
+            currentMode !== "24h" &&
+            /^\d+h$/.test(currentMode);
+          const activeHours = isCustomActive ? currentMode.replace("h", "") : null;
+
+          return (
+            <div
+              className={`p-4 rounded-xl border transition-all ${
+                isCustomActive
+                  ? "border-purple-400/40 bg-purple-400/5 text-purple-300"
+                  : "border-gray-800 bg-gray-900"
+              }`}
+            >
+              <div className="flex items-center gap-2.5 mb-3">
+                <Clock size={15} className={isCustomActive ? "" : "text-gray-500"} />
+                <span className={`text-sm font-semibold ${isCustomActive ? "" : "text-gray-300"}`}>
+                  Custom interval
+                </span>
+                {isCustomActive && (
+                  <span className="ml-auto text-[10px] font-medium px-2 py-0.5 rounded-full bg-current/10 opacity-70">
+                    Active — every {activeHours}h
+                  </span>
+                )}
+              </div>
+              <p className={`text-xs mb-3 ${isCustomActive ? "opacity-70" : "text-gray-600"}`}>
+                Run suggestions every N hours (1–999). The agent fires on ingest but respects the cooldown.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={999}
+                  placeholder={activeHours ?? "e.g. 6"}
+                  value={customHours}
+                  onChange={(e) => setCustomHours(e.target.value)}
+                  className="w-24 bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                />
+                <span className="text-xs text-gray-500">hours</span>
+                <button
+                  onClick={handleCustomApply}
+                  disabled={savingMode || !customHours}
+                  className="ml-auto px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          );
+        })()}
       </section>
 
       {/* API Key */}
