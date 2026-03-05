@@ -9,47 +9,38 @@ import {
 import { api, Project } from "@/lib/api";
 
 const NAV = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard, description: "Today's cost, tokens & latency" },
-  { href: "/dashboard/hotspots", label: "Cost Hotspots", icon: Flame, description: "Which features spend the most" },
-  { href: "/dashboard/suggestions", label: "Suggestions", icon: Lightbulb, description: "AI-backed savings recommendations" },
-  { href: "/dashboard/settings", label: "Settings & SDK", icon: Settings, description: "API key & integration guide" },
+  { href: "/dashboard",             label: "Overview",      icon: LayoutDashboard, description: "Today's cost, tokens & latency" },
+  { href: "/dashboard/hotspots",    label: "Cost Hotspots", icon: Flame,           description: "Which features spend the most" },
+  { href: "/dashboard/suggestions", label: "Suggestions",   icon: Lightbulb,       description: "AI-backed savings recommendations" },
+  { href: "/dashboard/settings",    label: "Settings & SDK",icon: Settings,        description: "API key & integration guide" },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
+  const router   = useRouter();
   const pathname = usePathname();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [activeProject, setActiveProject] = useState<Project | null>(null);
-  const [showProjects, setShowProjects] = useState(false);
+  const [projects,        setProjects]        = useState<Project[]>([]);
+  const [activeProject,   setActiveProject]   = useState<Project | null>(null);
+  const [showProjects,    setShowProjects]    = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [newProjectName,  setNewProjectName]  = useState("");
+  const [creating,        setCreating]        = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
     if (!token) { router.push("/"); return; }
-
     api.projects.list().then((ps) => {
       setProjects(ps);
       const saved = localStorage.getItem("active_project");
       const found = ps.find((p) => p.id === saved) || ps[0];
-      if (found) {
-        setActiveProject(found);
-        localStorage.setItem("active_project", found.id);
-      }
+      if (found) { setActiveProject(found); localStorage.setItem("active_project", found.id); }
     }).catch(() => router.push("/"));
   }, [router]);
 
-  useEffect(() => {
-    if (creatingProject) inputRef.current?.focus();
-  }, [creatingProject]);
+  useEffect(() => { if (creatingProject) inputRef.current?.focus(); }, [creatingProject]);
 
-  function logout() {
-    localStorage.clear();
-    router.push("/");
-  }
+  function logout() { localStorage.clear(); router.push("/"); }
 
   async function handleCreateProject() {
     const name = newProjectName.trim();
@@ -60,18 +51,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       setProjects((prev) => [...prev, p]);
       setActiveProject(p);
       localStorage.setItem("active_project", p.id);
-      setNewProjectName("");
-      setCreatingProject(false);
-      setShowProjects(false);
-    } finally {
-      setCreating(false);
-    }
+      setNewProjectName(""); setCreatingProject(false); setShowProjects(false);
+    } finally { setCreating(false); }
   }
 
-  function cancelCreate() {
-    setCreatingProject(false);
-    setNewProjectName("");
-  }
+  function cancelCreate() { setCreatingProject(false); setNewProjectName(""); }
 
   async function handleDeleteProject(projectId: string) {
     await api.projects.delete(projectId);
@@ -87,33 +71,44 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex h-screen bg-gray-950 overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-64 flex-shrink-0 border-r border-gray-800 flex flex-col">
+    <div className="flex h-screen overflow-hidden bg-base-bg">
+      {/* ── Sidebar ── */}
+      <aside className="sidebar w-64 flex-shrink-0 flex flex-col">
+
         {/* Logo */}
-        <div className="px-4 py-5 border-b border-gray-800">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 bg-brand-500 rounded-md flex items-center justify-center text-white font-bold text-xs">L</div>
+        <div className="px-5 py-5 border-b border-base-border">
+          <div className="flex items-center gap-2.5">
+            <div
+              className="w-8 h-8 rounded-[10px] flex items-center justify-center text-white font-bold text-xs flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #39B26B 0%, #2FAE70 100%)" }}
+            >
+              L
+            </div>
             <div>
-              <div className="font-semibold text-white text-sm leading-tight">LLM Monitor</div>
-              <div className="text-gray-500 text-[10px] leading-tight">Efficiency Dashboard</div>
+              <div className="font-semibold text-sm text-ink-primary leading-tight">LLM Monitor</div>
+              <div className="text-[10px] text-ink-muted leading-tight">Efficiency Dashboard</div>
             </div>
           </div>
         </div>
 
         {/* Project switcher */}
-        <div className="px-3 py-3 border-b border-gray-800">
-          <div className="text-[10px] uppercase tracking-wider text-gray-600 px-2 mb-1">Project</div>
+        <div className="px-3 py-3 border-b border-base-border">
+          <div className="text-[10px] uppercase tracking-wider text-ink-muted px-2 mb-1.5 font-medium">Project</div>
           <button
             onClick={() => { setShowProjects(!showProjects); setCreatingProject(false); }}
-            className="w-full flex items-center justify-between px-2 py-2 rounded-lg hover:bg-gray-800 transition-colors text-sm"
+            className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-base-card transition-colors text-sm"
           >
-            <span className="text-gray-300 truncate">{activeProject?.name || "Select project"}</span>
-            <ChevronDown size={14} className={`text-gray-500 flex-shrink-0 transition-transform ${showProjects ? "rotate-180" : ""}`} />
+            <span className="text-ink-body truncate font-medium text-xs">
+              {activeProject?.name || "Select project"}
+            </span>
+            <ChevronDown
+              size={13}
+              className={`text-ink-muted flex-shrink-0 transition-transform ${showProjects ? "rotate-180" : ""}`}
+            />
           </button>
 
           {showProjects && (
-            <div className="mt-1 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+            <div className="mt-1.5 bg-white border border-base-border rounded-xl overflow-hidden shadow-card-hover">
               {projects.map((p) => (
                 <div key={p.id} className="flex items-center group">
                   <button
@@ -123,42 +118,40 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       setShowProjects(false);
                       setConfirmDeleteId(null);
                     }}
-                    className={`flex-1 text-left px-3 py-2 text-sm hover:bg-gray-800 transition-colors flex items-center gap-2 min-w-0 ${
-                      p.id === activeProject?.id ? "text-brand-400" : "text-gray-300"
+                    className={`flex-1 text-left px-3 py-2 text-xs hover:bg-base-card transition-colors flex items-center gap-2 min-w-0 ${
+                      p.id === activeProject?.id ? "text-brand-600 font-semibold" : "text-ink-body"
                     }`}
                   >
-                    {p.id === activeProject?.id && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 flex-shrink-0" />}
+                    {p.id === activeProject?.id && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-brand-500 flex-shrink-0" />
+                    )}
                     <span className="truncate">{p.name}</span>
                   </button>
                   {confirmDeleteId === p.id ? (
                     <div className="flex items-center gap-1 pr-2 flex-shrink-0">
                       <button
                         onClick={() => handleDeleteProject(p.id)}
-                        className="text-[10px] px-1.5 py-0.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors"
-                      >
-                        Delete
-                      </button>
+                        className="text-[10px] px-1.5 py-0.5 bg-red-500 hover:bg-red-400 text-white rounded-lg transition-colors"
+                      >Delete</button>
                       <button
                         onClick={() => setConfirmDeleteId(null)}
-                        className="text-[10px] px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
-                      >
-                        Cancel
-                      </button>
+                        className="text-[10px] px-1.5 py-0.5 bg-base-card hover:bg-base-border text-ink-body rounded-lg transition-colors"
+                      >Cancel</button>
                     </div>
                   ) : (
                     <button
                       onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(p.id); }}
-                      className="pr-2 opacity-0 group-hover:opacity-100 transition-opacity text-gray-600 hover:text-red-400 flex-shrink-0"
+                      className="pr-2 opacity-0 group-hover:opacity-100 transition-opacity text-ink-muted hover:text-red-500 flex-shrink-0"
                       title="Delete project"
                     >
-                      <Trash2 size={13} />
+                      <Trash2 size={12} />
                     </button>
                   )}
                 </div>
               ))}
 
               {creatingProject ? (
-                <div className="px-3 py-2 border-t border-gray-800 space-y-2">
+                <div className="px-3 py-2.5 border-t border-base-border space-y-2">
                   <input
                     ref={inputRef}
                     value={newProjectName}
@@ -168,19 +161,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       if (e.key === "Escape") cancelCreate();
                     }}
                     placeholder="Project name"
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-brand-500"
+                    className="w-full bg-base-card border border-base-border rounded-lg px-2.5 py-1.5 text-xs text-ink-primary placeholder-ink-muted focus:outline-none focus:border-brand-400"
                   />
                   <div className="flex gap-1.5">
                     <button
                       onClick={handleCreateProject}
                       disabled={!newProjectName.trim() || creating}
-                      className="flex items-center gap-1 px-2 py-1 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white text-xs rounded transition-colors"
+                      className="flex items-center gap-1 px-2.5 py-1 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white text-xs rounded-lg transition-colors font-medium"
                     >
                       <Check size={10} /> {creating ? "Creating…" : "Create"}
                     </button>
                     <button
                       onClick={cancelCreate}
-                      className="flex items-center gap-1 px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
+                      className="flex items-center gap-1 px-2.5 py-1 bg-base-card hover:bg-base-border text-ink-body text-xs rounded-lg transition-colors"
                     >
                       <X size={10} /> Cancel
                     </button>
@@ -189,9 +182,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               ) : (
                 <button
                   onClick={() => setCreatingProject(true)}
-                  className="w-full text-left px-3 py-2 text-xs text-gray-500 hover:bg-gray-800 flex items-center gap-1.5 border-t border-gray-800 transition-colors"
+                  className="w-full text-left px-3 py-2 text-xs text-ink-muted hover:bg-base-card flex items-center gap-1.5 border-t border-base-border transition-colors"
                 >
-                  <Plus size={12} /> New project
+                  <Plus size={11} /> New project
                 </button>
               )}
             </div>
@@ -199,24 +192,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-3 space-y-0.5">
-          <div className="text-[10px] uppercase tracking-wider text-gray-600 px-2 mb-2">Navigation</div>
+        <nav className="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
+          <div className="text-[10px] uppercase tracking-wider text-ink-muted px-2 mb-2 font-medium">Navigation</div>
           {NAV.map(({ href, label, icon: Icon, description }) => {
             const active = pathname === href;
             return (
               <Link
                 key={href}
                 href={href}
-                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm transition-colors group ${
+                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm transition-all group ${
                   active
-                    ? "bg-brand-600/20 text-brand-400"
-                    : "text-gray-400 hover:text-gray-200 hover:bg-gray-800"
+                    ? "bg-brand-50 text-brand-700"
+                    : "text-ink-body hover:text-ink-primary hover:bg-base-card"
                 }`}
               >
-                <Icon size={15} className="flex-shrink-0" />
+                <Icon
+                  size={15}
+                  className={`flex-shrink-0 transition-transform duration-200 group-hover:scale-110 ${
+                    active ? "text-brand-600" : "text-ink-icon"
+                  }`}
+                  strokeWidth={1.6}
+                />
                 <div className="min-w-0">
-                  <div className="font-medium leading-tight">{label}</div>
-                  <div className={`text-[10px] leading-tight truncate ${active ? "text-brand-500/70" : "text-gray-600"}`}>
+                  <div className={`font-semibold leading-tight text-sm ${active ? "" : ""}`}>{label}</div>
+                  <div className={`text-[10px] leading-tight truncate ${active ? "text-brand-500" : "text-ink-muted"}`}>
                     {description}
                   </div>
                 </div>
@@ -225,40 +224,39 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           })}
         </nav>
 
-        {/* Bottom */}
-        <div className="px-3 py-3 border-t border-gray-800">
+        {/* Sign out */}
+        <div className="px-3 py-3 border-t border-base-border">
           <button
             onClick={logout}
-            className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-800 w-full transition-colors"
+            className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm text-ink-muted hover:text-ink-primary hover:bg-base-card w-full transition-colors"
           >
-            <LogOut size={15} />
-            Sign out
+            <LogOut size={14} strokeWidth={1.6} />
+            <span className="text-xs font-medium">Sign out</span>
           </button>
         </div>
       </aside>
 
-      {/* Main */}
+      {/* ── Main ── */}
       <main className="flex-1 overflow-auto">
-        {activeProject
-          ? children
-          : (
-            <div className="flex items-center justify-center h-full text-gray-500">
-              <div className="text-center max-w-sm">
-                <div className="w-12 h-12 bg-gray-900 border border-gray-800 rounded-xl flex items-center justify-center mx-auto mb-4">
-                  <Activity size={24} className="text-gray-700" />
-                </div>
-                <p className="text-white font-medium mb-1">No projects yet</p>
-                <p className="text-sm text-gray-500 mb-5">Create a project to start monitoring your LLM API costs and latency.</p>
-                <button
-                  onClick={() => { setShowProjects(true); setCreatingProject(true); }}
-                  className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 transition-colors"
-                >
-                  Create your first project
-                </button>
+        {activeProject ? children : (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center max-w-sm px-6">
+              <div className="w-14 h-14 card card-hover rounded-2xl flex items-center justify-center mx-auto mb-5">
+                <Activity size={24} className="text-ink-muted" strokeWidth={1.5} />
               </div>
+              <p className="text-ink-primary font-semibold mb-1.5">No projects yet</p>
+              <p className="text-sm text-ink-body mb-6 leading-relaxed">
+                Create a project to start monitoring your LLM API costs and latency.
+              </p>
+              <button
+                onClick={() => { setShowProjects(true); setCreatingProject(true); }}
+                className="px-5 py-2.5 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-sm font-medium transition-colors shadow-sm"
+              >
+                Create your first project
+              </button>
             </div>
-          )
-        }
+          </div>
+        )}
       </main>
     </div>
   );

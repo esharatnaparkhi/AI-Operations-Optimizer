@@ -3,12 +3,68 @@
 @tailwind utilities;
 
 :root {
-  --bg: #0f1117;
-  --surface: #1a1d2e;
-  --border: #2a2d3e;
+  --bg:      #F5F5F3;
+  --surface: #FBFBFA;
+  --border:  #E6E6E3;
+  --accent:  #39B26B;
 }
 
 body {
-  @apply bg-gray-950 text-gray-100;
+  background: #F5F5F3;
+  color: #111111;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+
+/* ── Card (white surface) ──────────────────────────────────── */
+
+.card {
+  background: #FFFFFF;
+  border: 1px solid #E6E6E3;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.025);
+}
+
+.card-hover {
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+
+.card-hover:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 35px rgba(0, 0, 0, 0.07), 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+
+/* ── Surface (secondary, slightly tinted) ───────────────────── */
+
+.surface {
+  background: #F7F7F4;
+  border: 1px solid #ECECE8;
+  border-radius: 14px;
+}
+
+/* ── Inner surface (inside a card) ─────────────────────────── */
+
+.inner-surface {
+  background: #F1F1ED;
+  border: 1px solid #E6E6E3;
+  border-radius: 10px;
+}
+
+/* ── Icon container ─────────────────────────────────────────── */
+
+.icon-box {
+  background: #EFEFEA;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+
+.sidebar {
+  background: #FBFBFA;
+  border-right: 1px solid #E6E6E3;
 }
