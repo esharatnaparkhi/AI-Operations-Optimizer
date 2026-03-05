@@ -61,9 +61,9 @@ async def simulate_suggestion(
     if not owner_check.scalar_one_or_none():
         raise HTTPException(404, "Suggestion not found")
 
-    current = sug.current_cost_per_day or 0.0
-    projected = sug.projected_cost_per_day or current
-    savings_pct = sug.estimated_savings_pct or 0.0
+    current = sug.current_cost_per_day if sug.current_cost_per_day is not None else 0.0
+    projected = sug.projected_cost_per_day if sug.projected_cost_per_day is not None else current
+    savings_pct = sug.estimated_savings_pct if sug.estimated_savings_pct is not None else 0.0
 
     savings_daily = current - projected
     savings_monthly = savings_daily * 30
@@ -159,8 +159,8 @@ async def dismiss_suggestion(
 
 async def _generate_snippet_llm(sug: Suggestion) -> str:
     """
-    Use an LLM to read the suggestion evidence and generate a valid, complete
-    Python code snippet the developer can paste into their codebase.
+    Use an LLM to produce a clear, textual recommendation explaining exactly
+    what change to make in the pipeline and why.
     Falls back to a static template if the LLM is unavailable.
     """
     settings = get_settings()
@@ -175,10 +175,14 @@ async def _generate_snippet_llm(sug: Suggestion) -> str:
         feature = sug.feature_tag or "your feature"
 
         system = (
-            "You are an expert Python developer helping optimize LLM API usage. "
-            "Generate a complete, runnable Python code snippet that implements the fix. "
-            "Output ONLY the Python code — no markdown fences, no explanation outside # comments. "
-            "Include all necessary imports at the top."
+            "You are an LLM cost-optimization advisor. "
+            "Write a clear, actionable plain-text recommendation (no code blocks, no markdown). "
+            "Structure your response as:\n"
+            "WHAT TO CHANGE: one sentence naming the specific call or parameter to update.\n"
+            "WHERE: the part of the pipeline affected (e.g. the model= argument in the API call for feature '<tag>').\n"
+            "HOW: step-by-step plain-English instructions, referencing the specific parameter names or values to change.\n"
+            "WHY: brief explanation of the cost/latency impact with the before/after numbers provided.\n"
+            "Keep the total response under 200 words."
         )
 
         if sug.suggestion_type == "model_downgrade":
@@ -188,30 +192,25 @@ async def _generate_snippet_llm(sug: Suggestion) -> str:
             current_daily = sug.current_cost_per_day or 0.0
             projected_daily = sug.projected_cost_per_day or current_daily * 0.25
             human = (
-                f'The "{feature}" feature currently calls {current_model} '
-                f"but averages only ~{avg_tokens} output tokens — a simple task.\n"
-                f"{target_model} costs ~17x less and handles it just as well.\n"
-                f"Current cost: ~${current_daily * 30:.2f}/month → "
-                f"Projected: ~${projected_daily * 30:.2f}/month after fix.\n\n"
-                "Write a complete Python snippet that:\n"
-                "1. Imports openai and llm_monitor\n"
-                "2. Wraps the OpenAI client with LLMMonitor\n"
-                f"3. Makes the API call using model='{target_model}' "
-                f"(was: '{current_model}')\n"
-                f"4. Uses feature_tag='{feature}'\n"
-                "5. Adds a comment showing the monthly savings estimate"
+                f'Feature: "{feature}"\n'
+                f"Current model: {current_model} (averages ~{avg_tokens} output tokens — a simple task)\n"
+                f"Recommended model: {target_model}\n"
+                f"Current daily cost: ${current_daily:.6f} → Projected: ${projected_daily:.6f}/day after fix\n\n"
+                f"Write a plain-text recommendation telling the developer to find every place in their "
+                f'pipeline where the "{feature}" feature tag is used and change model="{current_model}" '
+                f'to model="{target_model}". Mention the savings.'
             )
 
         elif sug.suggestion_type == "latency_optimization":
             avg_latency = payload.get("avg_latency_ms", "high")
             human = (
-                f'The "{feature}" feature has an average latency of {avg_latency}ms.\n\n'
-                "Write a Python snippet that reduces latency by:\n"
-                "1. Using stream=True so the user sees output immediately\n"
-                "2. Setting a request timeout\n"
-                "3. Showing how to iterate the stream and print each chunk\n"
-                f"4. Including feature_tag='{feature}'\n"
-                "5. Adding comments explaining each optimization"
+                f'Feature: "{feature}"\n'
+                f"Average latency: {avg_latency}ms\n\n"
+                f"Write a plain-text recommendation telling the developer how to reduce latency "
+                f'for the "{feature}" feature. Focus on: enabling streaming (stream=True) so the '
+                f"user sees output immediately rather than waiting for the full response, adding a "
+                f"request timeout, and considering whether the model choice can be simplified. "
+                f"Reference the specific API call parameter names."
             )
 
         elif sug.suggestion_type == "anomaly_alert":
@@ -219,110 +218,124 @@ async def _generate_snippet_llm(sug: Suggestion) -> str:
             trailing_avg = payload.get("trailing_avg", 0.0)
             multiplier = payload.get("multiplier", 2.0)
             human = (
-                f"Today's LLM cost (${today_cost:.4f}) is {multiplier:.1f}x "
-                f"the trailing daily average (${trailing_avg:.4f}).\n\n"
-                "Write a Python snippet that:\n"
-                "1. Defines a daily budget threshold (e.g. 2x the trailing average)\n"
-                "2. Checks if today's cost exceeds the threshold\n"
-                "3. Logs a warning with the overage amount\n"
-                "4. Can be dropped into a cron job or health-check endpoint\n"
-                "5. Uses the llm_monitor SDK to fetch today's cost"
+                f"Today's LLM cost: ${today_cost:.4f}\n"
+                f"Trailing daily average: ${trailing_avg:.4f}\n"
+                f"Spike ratio: {multiplier:.1f}x\n\n"
+                f"Write a plain-text recommendation alerting the developer to an unusual cost spike. "
+                f"Suggest they: (1) check which feature tags drove the spike today, "
+                f"(2) look for loops or retries that may have caused excessive calls, "
+                f"(3) add a daily budget guard to their pipeline that logs a warning if cost exceeds "
+                f"2x the trailing average, and (4) review recent deployments for regressions."
             )
 
         elif sug.suggestion_type == "prompt_compress":
-            compressed = payload.get("compressed_prompt", "")
             savings = sug.estimated_savings_pct or 0
+            original_tokens = payload.get("original_tokens", "unknown")
+            compressed_tokens = payload.get("compressed_tokens", "unknown")
             human = (
-                f'The "{feature}" feature\'s prompts can be compressed by ~{savings:.0f}%.\n\n'
-                + (
-                    f"Compressed system prompt:\n{compressed[:800]}\n\n"
-                    if compressed
-                    else ""
-                )
-                + "Write a Python snippet that:\n"
-                "1. Shows the ORIGINAL verbose prompt as a comment\n"
-                "2. Defines the compressed SYSTEM_PROMPT as a variable\n"
-                "3. Uses it in the API call\n"
-                f"4. Includes feature_tag='{feature}'"
+                f'Feature: "{feature}"\n'
+                f"Original tokens: {original_tokens} → Compressed tokens: {compressed_tokens} "
+                f"({savings:.0f}% reduction)\n\n"
+                f"Write a plain-text recommendation telling the developer to shorten their system "
+                f'prompt for the "{feature}" feature. Suggest they: (1) remove filler phrases and '
+                f"redundant instructions, (2) replace verbose examples with concise bullet points, "
+                f"(3) use imperative tense ('Summarize in 3 bullets' not 'You should summarize using "
+                f"three bullet points'), and (4) re-test the compressed prompt for quality before deploying."
             )
 
         else:
             human = (
                 f"Suggestion: {sug.title}\n"
                 f"Context: {sug.description}\n\n"
-                "Write a complete, runnable Python snippet to implement this fix."
+                "Write a plain-text recommendation for what to change and how."
             )
 
         llm = ChatOpenAI(
             model=settings.COMPRESSION_MODEL,
             api_key=settings.OPENAI_API_KEY,
             temperature=0,
-            max_tokens=700,
+            max_tokens=400,
         )
         response = await llm.ainvoke([
             SystemMessage(content=system),
             HumanMessage(content=human),
         ])
-        snippet = (response.content or "").strip()
-        return snippet if snippet else _generate_snippet_static(sug)
+        recommendation = (response.content or "").strip()
+        return recommendation if recommendation else _generate_snippet_static(sug)
 
     except Exception as exc:
-        logger.warning("LLM snippet generation failed, using static fallback: %s", exc)
+        logger.warning("LLM recommendation generation failed, using static fallback: %s", exc)
         return _generate_snippet_static(sug)
 
 
 def _generate_snippet_static(sug: Suggestion) -> str:
-    """Static fallback template when the LLM is unavailable."""
+    """Static fallback textual recommendation when the LLM is unavailable."""
     payload = sug.payload or {}
-    feature = sug.feature_tag or "your_feature"
+    feature = sug.feature_tag or "your feature"
 
     if sug.suggestion_type == "model_downgrade":
         current_model = payload.get("current_model", payload.get("model", "gpt-4o"))
         target_model = payload.get("target_model", "gpt-4o-mini")
+        current_daily = sug.current_cost_per_day or 0.0
+        projected_daily = sug.projected_cost_per_day or current_daily * 0.25
         return (
-            f"import openai\n"
-            f"from llm_monitor import LLMMonitor, feature_tag\n\n"
-            f"monitor = LLMMonitor(api_key=YOUR_API_KEY)\n"
-            f"client = monitor.wrap_openai(openai.OpenAI())\n\n"
-            f"# Switch to cheaper model for feature: {feature}\n"
-            f"# {current_model} → {target_model}  (~75% cost reduction)\n"
-            f"with feature_tag('{feature}'):\n"
-            f"    response = client.chat.completions.create(\n"
-            f'        model="{target_model}",  # was: "{current_model}"\n'
-            f"        messages=messages,\n"
-            f"    )"
+            f'WHAT TO CHANGE: Replace model="{current_model}" with model="{target_model}" '
+            f'in all API calls made under the "{feature}" feature tag.\n\n'
+            f"WHERE: Find every call to your LLM client where feature_tag is set to "
+            f'"{feature}" and locate the model= parameter in that call.\n\n'
+            f"HOW: Change the model argument from \"{current_model}\" to \"{target_model}\". "
+            f"No other changes are needed — the API interface is identical.\n\n"
+            f"WHY: This feature averages very few output tokens, making it a simple task "
+            f"that does not need a frontier model. {target_model} handles it equally well "
+            f"at ~75% lower cost. Estimated savings: "
+            f"${current_daily:.6f}/day → ${projected_daily:.6f}/day."
         )
     elif sug.suggestion_type == "prompt_compress":
-        compressed = payload.get("compressed_prompt", "")
         savings = sug.estimated_savings_pct or 0
+        original_tokens = payload.get("original_tokens", "unknown")
+        compressed_tokens = payload.get("compressed_tokens", "unknown")
         return (
-            f"# Compressed prompt for feature: {feature}\n"
-            f"# ~{savings:.0f}% token reduction\n\n"
-            + (
-                f"SYSTEM_PROMPT = '''\n{compressed[:500]}\n'''"
-                if compressed
-                else "# Paste compressed prompt here"
-            )
+            f'WHAT TO CHANGE: Shorten the system prompt used by the "{feature}" feature.\n\n'
+            f"WHERE: Find the system prompt string passed to the messages= parameter "
+            f'in your "{feature}" pipeline.\n\n'
+            f"HOW: (1) Remove filler phrases and repeated instructions. "
+            f"(2) Replace multi-sentence examples with concise bullet points. "
+            f"(3) Use imperative tense — e.g. 'Summarize in 3 bullets' instead of "
+            f"'You should provide a summary using three bullet points'. "
+            f"(4) Test the shorter prompt for quality before deploying.\n\n"
+            f"WHY: Analysis shows the prompt can be reduced from {original_tokens} to "
+            f"~{compressed_tokens} tokens — a {savings:.0f}% reduction that directly "
+            f"lowers input token costs on every call."
         )
     elif sug.suggestion_type == "latency_optimization":
+        avg_latency = payload.get("avg_latency_ms", "high")
         return (
-            f"# Reduce latency for feature: {feature}\n"
-            f"# Use streaming so the user sees output immediately\n"
-            f"import openai\n"
-            f"from llm_monitor import LLMMonitor, feature_tag\n\n"
-            f"monitor = LLMMonitor(api_key=YOUR_API_KEY)\n"
-            f"client = monitor.wrap_openai(openai.OpenAI())\n\n"
-            f"with feature_tag('{feature}'):\n"
-            f"    stream = client.chat.completions.create(\n"
-            f"        model=model,\n"
-            f"        messages=messages,\n"
-            f"        stream=True,\n"
-            f"        timeout=30,\n"
-            f"    )\n"
-            f"    for chunk in stream:\n"
-            f"        delta = chunk.choices[0].delta.content\n"
-            f"        if delta:\n"
-            f"            print(delta, end='', flush=True)"
+            f'WHAT TO CHANGE: Enable streaming on API calls for the "{feature}" feature.\n\n'
+            f"WHERE: Find the call to your LLM client where feature_tag is set to "
+            f'"{feature}" and add stream=True to its parameters.\n\n'
+            f"HOW: (1) Add stream=True to the API call. "
+            f"(2) Update the calling code to iterate over the stream chunks instead of "
+            f"awaiting a single response — e.g. iterate chunk.choices[0].delta.content. "
+            f"(3) Add a timeout parameter (e.g. timeout=30) to avoid hanging calls. "
+            f"(4) Consider whether a smaller model could also reduce latency.\n\n"
+            f"WHY: This feature has an average latency of {avg_latency}ms. Streaming "
+            f"makes the first token visible immediately, reducing perceived latency "
+            f"significantly without changing model or prompt."
+        )
+    elif sug.suggestion_type == "anomaly_alert":
+        today_cost = payload.get("today_cost", 0.0)
+        trailing_avg = payload.get("trailing_avg", 0.0)
+        multiplier = payload.get("multiplier", 2.0)
+        return (
+            f"WHAT TO CHANGE: Investigate the cost spike and add a budget guard to your pipeline.\n\n"
+            f"WHERE: Review all LLM calls made today across your project.\n\n"
+            f"HOW: (1) Check which feature tags drove the most spend today using the Hotspots page. "
+            f"(2) Look for loops, retries, or fan-out patterns that may have caused excessive calls. "
+            f"(3) Add a check at the start of your pipeline that compares today's running cost "
+            f"against your daily budget threshold and logs a warning if exceeded. "
+            f"(4) Review any recent deployments for regressions in call volume or prompt size.\n\n"
+            f"WHY: Today's cost (${today_cost:.4f}) is {multiplier:.1f}x the trailing daily "
+            f"average (${trailing_avg:.4f}), indicating an unusual spike that warrants investigation."
         )
     else:
-        return f"# {sug.title}\n# {sug.description}"
+        return f"{sug.title}\n\n{sug.description}"

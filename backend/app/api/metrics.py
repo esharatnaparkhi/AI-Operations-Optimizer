@@ -191,4 +191,4 @@ async def delete_feature_tag(
                 LLMEvent.feature_tag == feature_tag,
             )
         )
-    await db.flush()
+    await db.commit()
