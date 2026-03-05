@@ -16,9 +16,9 @@ logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL, logging.INFO))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup (Alembic handles production migrations)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if settings.ENVIRONMENT == "development":
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     yield
 
 
