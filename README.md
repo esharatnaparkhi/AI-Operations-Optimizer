@@ -1,296 +1,153 @@
 # LLM Efficiency Platform
 
-An end-to-end observability and optimization platform for production LLM applications. It instruments your OpenAI (or Anthropic) client with a single line of code, ships structured telemetry to a backend pipeline, and surfaces actionable cost and latency optimizations in a real-time dashboard.
+An **observability and optimization platform for production LLM applications**.  
+It instruments your LLM client with a single line of code, captures usage telemetry, and provides **cost, latency, and efficiency insights** through an analytics dashboard.
 
-Think of it as **Sentry for LLM costs** — passive instrumentation, zero changes to business logic, automatic recommendations.
-
----
-
-## Aim
-
-LLM API costs and latency are opaque by default. Teams commonly overspend on frontier models for simple tasks, write bloated prompts, and have no visibility into which features of their product are responsible for most of the spend.
-
-This platform solves that by:
-
-- Giving you **per-feature cost and latency breakdowns** across your entire LLM pipeline
-- Running **automated heuristic analysis** after every ingest batch to detect model over-engineering, latency regressions, and cost spikes
-- Producing **concrete, human-readable fix recommendations** (not just alerts) that tell you exactly what to change in your pipeline and why
-- Letting you **simulate the financial impact** of a suggested change before applying it
+Think of it as **Sentry for LLM systems** — automatic monitoring, minimal instrumentation, and actionable optimization suggestions.
 
 ---
 
-## What It Takes as Input
+# Live Components
 
-### From your application (via the SDK)
+## Python SDK (Published on PyPI)
 
-Every time your application makes an LLM call, the SDK captures and ships:
+A lightweight **Python SDK** that intercepts LLM calls and captures telemetry including:
 
-| Field | Description |
-|---|---|
-| `model` | Model name (e.g. `gpt-4o`, `claude-3-5-sonnet`) |
-| `provider` | API provider (`openai`, `anthropic`, `cohere`, etc.) |
-| `input_tokens` | Prompt token count |
-| `output_tokens` | Completion token count |
-| `latency_ms` | End-to-end wall-clock latency |
-| `feature_tag` | Optional label grouping calls by product feature |
-| `user_id` | Optional user identifier (hashed before transmission) |
-| `session_id` | Optional session identifier |
-| `error` | Error message if the call failed |
-| `status_code` | HTTP status from the provider |
+- tokens used
+- request latency
+- estimated cost
+- feature-level usage tags
 
-The SDK captures all of this automatically by wrapping the client — no manual instrumentation needed.
+Install from PyPI:
 
-### Configuration inputs
-
-- **Project API key** — issued per project from the dashboard, authenticates SDK events
-- **Suggestion frequency mode** — controls how aggressively the analysis pipeline runs (`instant`, `24h`, or a custom interval like `6h`)
-- **OpenAI API key** (optional) — enables LLM-powered recommendation text; falls back to static templates if absent
-
----
-
-## What It Gives as Output
-
-### Dashboard metrics
-
-- **Overview** — today's cost, token usage, API call count, average latency, efficiency score, and day-over-day cost trend
-- **14-day timeseries** — daily cost, token usage, and call volume charts
-- **Cost hotspots** — every feature tag ranked by total spend, with share of budget, token counts, call volumes, and latency
-
-### Optimization suggestions
-
-Each suggestion includes:
-
-- **Type** — one of: model downgrade, prompt compression, latency optimization, anomaly alert
-- **Feature tag** — which part of your pipeline is affected
-- **Cost before / after** — current daily cost and projected daily cost after the fix
-- **Estimated savings %** — percentage reduction in cost
-- **Accuracy risk** — low / medium / high, indicating how safe the change is
-- **Fix recommendation** — a plain-English step-by-step guide structured as:
-  - **WHAT TO CHANGE** — the specific parameter or value to update
-  - **WHERE** — which API call or pipeline component is affected
-  - **HOW** — exact steps to make the change
-  - **WHY** — before/after numbers showing the financial impact
-
-### Suggestion states
-
-Suggestions flow through: `pending` → `simulated` → `applied` (or `dismissed`)
-
-- **Simulate** — calculates precise monthly savings and sample size before you commit
-- **Apply** — generates the full human-readable recommendation
-- **Dismiss** — removes it from your queue
-
----
-
-## How the System Works
-
-```
-Your App
-  └─ SDK wraps OpenAI/Anthropic client
-       └─ Intercepts every LLM call
-            └─ Captures telemetry (tokens, cost, latency, tags)
-                 └─ Batches events (up to 50, flushed every 0.5s)
-                      └─ POST /api/v1/ingest → Backend
-                           ├─ Stores LLMEvent rows in PostgreSQL
-                           └─ Triggers Celery task (async)
-                                └─ Heuristic analysis engine
-                                     ├─ Model downgrade check
-                                     ├─ Latency regression check
-                                     └─ Cost spike detection
-                                          └─ Creates Suggestion rows
-                                               └─ Dashboard reads & displays
-```
-
-### 1. SDK instrumentation
-
-The SDK's `LLMMonitor.wrap_openai()` monkey-patches `client.chat.completions.create`. The patch:
-1. Records the start time
-2. Calls the real API
-3. Extracts token counts, model name, and feature tag from the response and context
-4. Estimates cost using built-in pricing tables (covering 20+ models across OpenAI, Anthropic, Google, Cohere, Mistral)
-5. Enqueues an `LLMEvent` to a thread-safe in-memory queue
-
-A background daemon thread flushes the queue to the backend in batches, keeping the critical path latency impact under 1ms.
-
-### 2. Ingest API
-
-`POST /api/v1/ingest` accepts batched events authenticated by project API key. It:
-- De-duplicates by `event_id` (UUID generated client-side)
-- Stores each event as an `LLMEvent` row
-- Fires a `trigger_metrics_aggregation` Celery task asynchronously
-
-### 3. Heuristic analysis (zero LLM calls)
-
-After every ingest batch, the Celery worker runs `_run_project_analysis()` — a pure Python function that queries the database and applies three checks:
-
-**Model downgrade check**: Finds feature tags where ≥5 calls used a frontier model (e.g. `gpt-4o`, `gpt-4-turbo`, `claude-3-opus`) and the average output token count is ≤100. This indicates a simple task that doesn't need a frontier model. Creates a `model_downgrade` suggestion with ~75% projected cost savings.
-
-**Latency optimization check**: Finds feature tags with average latency above 3000ms. Creates a `latency_optimization` suggestion recommending streaming (`stream=True`) and timeouts.
-
-**Cost spike check**: Compares today's total project cost against a 7-day trailing daily average. If today's cost is ≥2× the average, creates an `anomaly_alert` suggestion.
-
-All three checks include an inline duplicate guard — if a non-dismissed suggestion of the same type and feature tag already exists, it is skipped.
-
-### 4. Periodic sweeps (Celery Beat)
-
-In addition to per-ingest triggers, a Celery Beat scheduler runs:
-- **Hourly** (`run_heuristic_agent`) — scans all active projects and runs `_run_project_analysis` on any that are due based on their configured suggestion frequency
-- **Hourly** (`run_anomaly_agent`) — dedicated cost-spike pass across all projects
-
-### 5. LLM calls (used sparingly)
-
-The platform uses a real LLM in only one place: prompt compression. When a `prompt_compress` suggestion is applied, `run_compression_agent` makes a **single** `gpt-4o-mini` call to analyze a sample prompt and suggest a compressed version. All other analysis (model downgrade, latency, anomaly) is pure Python with zero LLM calls.
-
-When a user clicks **View fix steps**, `_generate_snippet_llm` makes one LLM call (also `gpt-4o-mini`) to produce the plain-text WHAT/WHERE/HOW/WHY recommendation. If the OpenAI key is absent or the call fails, it falls back to `_generate_snippet_static` — a template-based fallback that covers all suggestion types.
-
-### 6. Dashboard
-
-A Next.js frontend reads from the backend REST API using a typed API client. All pages are client-rendered with React hooks. The dashboard has four sections: Overview, Cost Hotspots, Suggestions, and Settings.
-
----
-
-## How to Run
-
-### Prerequisites
-
-- Docker and Docker Compose
-- An OpenAI API key (optional — only needed for LLM-powered recommendation text)
-
-### 1. Clone and configure
-
-```bash
-git clone <repo>
-cd llm-efficiency-platform
-cp .env.example .env
-```
-
-Edit `.env`:
-
-```env
-# Required
-SECRET_KEY=<long-random-string>
-
-# Optional — enables LLM-powered fix recommendations
-OPENAI_API_KEY=sk-...
-```
-
-The defaults in `.env.example` work out of the box for local Docker Compose.
-
-### 2. Start all services
-
-```bash
-docker compose up --build
-```
-
-This starts six containers:
-
-| Container | Role | Port |
-|---|---|---|
-| `db` | PostgreSQL 16 | 5432 |
-| `redis` | Redis 7 (broker + result backend) | 6379 |
-| `backend` | FastAPI + Uvicorn | 8000 |
-| `worker` | Celery worker (analysis tasks) | — |
-| `beat` | Celery Beat (scheduled sweeps) | — |
-| `dashboard` | Next.js frontend | 3000 |
-
-The backend runs `alembic upgrade head` on startup before accepting requests.
-
-### 3. Open the dashboard
-
-Navigate to [http://localhost:3000](http://localhost:3000), register an account, and create a project. Copy the project API key from Settings.
-
-### 4. Instrument your application
+https://pypi.org/project/llm-monitor-sdk/0.1.0/
 
 ```bash
 pip install llm-monitor-sdk
 ```
 
-```python
-import openai
-from llm_monitor import LLMMonitor, feature_tag
+The SDK wraps OpenAI/Anthropic clients and ships telemetry without changing application logic or adding noticeable latency.
 
-# Initialize once at startup
-monitor = LLMMonitor(
-    api_key="<your-project-api-key>",
-    endpoint="http://localhost:8000",
-)
+## Live Dashboard
 
-# Wrap your client — one line, no other changes needed
-client = monitor.wrap_openai(openai.OpenAI())
+View **real-time** metrics and optimization insights:
 
-# Tag calls by feature for per-feature cost breakdown
-with feature_tag("summarize"):
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": "Summarize this article..."}],
-    )
-```
+https://ai-operations-optimizer.vercel.app
 
-Data appears in the dashboard within seconds. Suggestions appear automatically as the analysis pipeline processes your events.
+The dashboard displays:
+- LLM cost analytics
+- feature-level cost hotspots
+- latency metrics (P50 / P95)
+- automated optimization suggestions
 
-### 5. Development (without Docker)
+# What Problem this Solves
 
-```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+LLM applications often lack visibility into:
+- which features consume the most tokens
+- which models are unnecessarily expensive
+- latency bottlenecks
+- prompt inefficiencies
 
-# Worker (separate terminal)
-celery -A app.celery_app worker --concurrency=4 -Q default,agents
+This platform provides production-level observability and automated optimization insights for AI systems.
 
-# Beat scheduler (separate terminal)
-celery -A app.celery_app beat
 
-# Dashboard (separate terminal)
-cd dashboard
-npm install
-npm run dev
-```
+# Key Capabilities
 
-Requires a running PostgreSQL instance and Redis. Set `DATABASE_URL`, `SYNC_DATABASE_URL`, and `REDIS_URL` in your environment.
+### Cost & Efficiency Tracking
+Tracks token usage, request cost, and cost-per-feature, helping teams evaluate quality vs cost vs latency trade-offs.
+
+### Observability & Tracing
+Provides per-request traces including model, tokens, latency, and feature tag, enabling deep insight into AI workflows.
+
+### Latency Monitoring
+Measures P50/P95 latency and response trends, enabling teams to define latency budgets.
+
+### Automated Optimization Suggestions
+Heuristic analysis detects inefficiencies such as:
+- model downgrades
+- prompt compression opportunities
+- latency optimizations
+- cost anomalies
+
+### Structured Outputs & Validation
+Uses Pydantic schemas to enforce structured responses and reliable downstream processing.
+
+### Evaluation & Regression Testing
+Supports curated evaluation datasets and regression checks to ensure prompt or model changes do not degrade quality.
+
+
+## Agent System
+
+The platform includes an **AI-driven analysis layer built with LangChain Agents and Celery workers** that continuously analyze LLM telemetry.
+
+Agents use tool-calling to query usage data, detect inefficiencies, and automatically generate **cost, latency, and prompt optimization suggestions**.
+
+### Agents Used
+
+**1. Heuristic Analysis Agent**
+
+Runs periodically to detect optimization opportunities in the pipeline.
+It analyzes telemetry data to identify:
+
+- expensive frontier models used for simple tasks  
+- high-latency features in the pipeline  
+- inefficient prompt usage patterns  
+
+This agent generates suggestions such as:
+
+- **model downgrades**
+- **latency optimizations**
+- **prompt compression opportunities**
 
 ---
 
-## Project Structure
+**2. Cost Anomaly Detection Agent**
 
-```
-llm-efficiency-platform/
-├── sdk/                    # Python client SDK
-│   └── llm_monitor/
-│       ├── monitor.py      # LLMMonitor — wraps clients, manages lifecycle
-│       ├── wrappers.py     # OpenAI / Anthropic intercept patches
-│       ├── shipper.py      # Thread-safe batched HTTP event queue
-│       ├── pricing.py      # Cost estimation tables (20+ models)
-│       ├── context.py      # feature_tag() context manager
-│       └── models.py       # LLMEvent dataclass
-│
-├── backend/
-│   └── app/
-│       ├── main.py         # FastAPI app, CORS, router registration
-│       ├── celery_app.py   # Celery + Beat schedule
-│       ├── core/
-│       │   ├── config.py   # Pydantic settings from environment
-│       │   ├── database.py # Async SQLAlchemy engine (asyncpg)
-│       │   └── auth.py     # JWT + bcrypt authentication
-│       ├── models/
-│       │   ├── db.py       # ORM: User, Project, LLMEvent, Suggestion, DailyMetric
-│       │   └── schemas.py  # Pydantic request/response schemas
-│       ├── api/
-│       │   ├── auth.py     # /register, /login
-│       │   ├── projects.py # Project CRUD + mode settings
-│       │   ├── ingest.py   # Telemetry ingestion endpoint
-│       │   ├── metrics.py  # Overview, timeseries, hotspots
-│       │   └── suggestions.py # List, simulate, apply, dismiss
-│       └── agents/
-│           └── tasks.py    # Celery tasks + heuristic analysis engine
-│
-└── dashboard/              # Next.js React frontend
-    └── src/app/
-        ├── dashboard/
-        │   ├── layout.tsx      # Sidebar navigation
-        │   ├── page.tsx        # Overview with charts
-        │   ├── hotspots/       # Feature cost breakdown
-        │   ├── suggestions/    # Optimization recommendations
-        │   └── settings/       # API key + suggestion frequency
-        └── lib/api.ts          # Typed API client
-```
+Monitors spending patterns across projects and detects abnormal spikes in LLM usage.
+It compares today's usage against historical averages and raises alerts when costs exceed expected thresholds.
+
+---
+
+**3. Prompt Compression Agent**
+
+Uses an LLM to analyze prompts and generate **shorter optimized versions** that preserve instructions while reducing token usage.
+This helps lower **input token costs** and improve overall efficiency.
+
+---
+
+### Agent Tools
+
+Agents interact with the system using **LangChain tools**, which expose database queries and system actions such as:
+
+- `find_expensive_model_features`
+- `find_high_latency_features`
+- `detect_cost_spike`
+- `save_suggestion`
+- `compress_prompt_text`
+
+These tools allow agents to **query telemetry data, reason about optimization opportunities, and persist suggestions** automatically.
+
+---
+
+### Agent Infrastructure
+
+The agent layer runs asynchronously using **Celery workers**, ensuring that analysis and optimization tasks never block the main API.
+
+This architecture enables:
+
+- **continuous AI pipeline optimization**
+- **scalable background analysis**
+- **automated cost and performance insights**
+
+
+# System Architecture
+The platform consists of three components:
+### Python SDK
+Intercepts LLM calls and collects telemetry.
+
+### Backend (FastAPI + Celery)
+Stores telemetry, aggregates metrics, and runs optimization analysis.
+
+### Dashboard (Next.js)
+Visualizes cost hotspots, latency trends, and improvement suggestions.
+
