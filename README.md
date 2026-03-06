@@ -50,29 +50,26 @@ LLM applications often lack visibility into:
 
 This platform provides production-level observability and automated optimization insights for AI systems.
 
-
-# Key Capabilities
-
-### Cost & Efficiency Tracking
+- ### Cost & Efficiency Tracking
 Tracks token usage, request cost, and cost-per-feature, helping teams evaluate quality vs cost vs latency trade-offs.
 
-### Observability & Tracing
+- ### Observability & Tracing
 Provides per-request traces including model, tokens, latency, and feature tag, enabling deep insight into AI workflows.
 
-### Latency Monitoring
+- ### Latency Monitoring
 Measures P50/P95 latency and response trends, enabling teams to define latency budgets.
 
-### Automated Optimization Suggestions
+- ### Automated Optimization Suggestions
 Heuristic analysis detects inefficiencies such as:
-- model downgrades
-- prompt compression opportunities
-- latency optimizations
-- cost anomalies
+  - model downgrades
+  - prompt compression opportunities
+  - latency optimizations
+  - cost anomalies
 
-### Structured Outputs & Validation
+- ### Structured Outputs & Validation
 Uses Pydantic schemas to enforce structured responses and reliable downstream processing.
 
-### Evaluation & Regression Testing
+- ### Evaluation & Regression Testing
 Supports curated evaluation datasets and regression checks to ensure prompt or model changes do not degrade quality.
 
 
