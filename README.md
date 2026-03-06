@@ -60,11 +60,7 @@ Provides per-request traces including model, tokens, latency, and feature tag, e
 Measures P50/P95 latency and response trends, enabling teams to define latency budgets.
 
 - ### Automated Optimization Suggestions
-Heuristic analysis detects inefficiencies such as:
-  - model downgrades
-  - prompt compression opportunities
-  - latency optimizations
-  - cost anomalies
+Heuristic analysis detects inefficiencies such as *model downgrades, prompt compression opportunities, latency optimizations, cost anomalies*
 
 - ### Structured Outputs & Validation
 Uses Pydantic schemas to enforce structured responses and reliable downstream processing.
