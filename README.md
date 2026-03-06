@@ -1,4 +1,4 @@
-# LLM Efficiency Platform
+# AI Operations Optimizer
 
 An **observability and optimization platform for production LLM applications**.  
 It instruments your LLM client with a single line of code, captures usage telemetry, and provides **cost, latency, and efficiency insights** through an analytics dashboard.
